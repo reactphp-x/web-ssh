@@ -29,15 +29,28 @@ const api = {
 const parseRoute = () => {
     const hash = location.hash.replace(/^#/, '') || '/hosts';
     const parts = hash.split('/').filter(Boolean);
+    if (parts[0] === 'ai' && parts[1]) {
+        return {
+            name: 'terminal',
+            id: Number(parts[1]),
+            nonce: parts[2] || String(Date.now()),
+            mode: 'ai',
+        };
+    }
     return {
         name: parts[0] || 'hosts',
         id: parts[1] ? Number(parts[1]) : null,
         nonce: parts[2] || null,
+        mode: parts[3] === 'ai' ? 'ai' : 'terminal',
     };
 };
 
 const openTerminalTab = (hostId) => {
     location.hash = '#/terminal/' + hostId + '/' + Date.now();
+};
+
+const openAiAssistant = (hostId) => {
+    location.hash = '#/terminal/' + hostId + '/' + Date.now() + '/ai';
 };
 
 const navigate = (path) => {
@@ -117,6 +130,8 @@ const appOptions = {
 
         const terminalHostId = computed(() => (route.value.name === 'terminal' ? route.value.id : null));
         const terminalOpenNonce = computed(() => (route.value.name === 'terminal' ? route.value.nonce : null));
+        const terminalOpenMode = computed(() => (route.value.name === 'terminal' ? route.value.mode : 'terminal'));
+        const isFullBleedView = computed(() => currentView.value === 'terminal');
 
         const SIDEBAR_KEY = 'web-ssh-sidebar-collapsed';
         const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_KEY) === '1');
@@ -137,7 +152,7 @@ const appOptions = {
         });
 
         const toggleSidebar = () => {
-            if (isMobile.value && currentView.value === 'terminal') {
+            if (isMobile.value && isFullBleedView.value) {
                 mobileNavOpen.value = !mobileNavOpen.value;
                 return;
             }
@@ -179,6 +194,8 @@ const appOptions = {
             editingHostId,
             terminalHostId,
             terminalOpenNonce,
+            terminalOpenMode,
+            isFullBleedView,
             sidebarCollapsed,
             toggleSidebar,
             isMobile,
@@ -201,7 +218,7 @@ const appOptions = {
             @complete="onTwoFactorComplete"
             @flash="setFlash"
         />
-        <div v-else-if="twoFactorReady" class="layout" :class="{ 'sidebar-collapsed': sidebarCollapsed, 'layout-mobile-terminal': isMobile && currentView === 'terminal', 'mobile-nav-open': mobileNavOpen }" @click.self="closeMobileNav">
+        <div v-else-if="twoFactorReady" class="layout" :class="{ 'sidebar-collapsed': sidebarCollapsed, 'layout-mobile-terminal': isMobile && isFullBleedView, 'mobile-nav-open': mobileNavOpen }" @click.self="closeMobileNav">
             <aside class="sidebar" @click.stop>
                 <button
                     type="button"
@@ -240,7 +257,7 @@ const appOptions = {
             </aside>
             <main class="main">
                 <button
-                    v-if="isMobile && currentView === 'terminal'"
+                    v-if="isMobile && isFullBleedView"
                     type="button"
                     class="mobile-nav-fab"
                     :title="mobileNavOpen ? '关闭菜单' : '打开菜单'"
@@ -256,6 +273,7 @@ const appOptions = {
                     :visible="currentView === 'terminal'"
                     :pending-host-id="terminalHostId"
                     :open-nonce="terminalOpenNonce"
+                    :open-mode="terminalOpenMode"
                     @flash="setFlash"
                 />
                 <LiveMonitorView v-if="currentView === 'live'" />
@@ -440,7 +458,7 @@ const appOptions = {
 
                 onMounted(load);
 
-                return { items, total, page, perPage, q, loading, load, remove, test, navigate, openTerminalTab };
+                return { items, total, page, perPage, q, loading, load, remove, test, navigate, openTerminalTab, openAiAssistant };
             },
             template: `
                 <div class="panel">
@@ -469,6 +487,7 @@ const appOptions = {
                                 <td>{{ item.last_connected_at || '-' }}</td>
                                 <td class="actions">
                                     <button @click="openTerminalTab(item.id)" title="在新标签页打开 SSH">登录</button>
+                                    <button @click="openAiAssistant(item.id)" title="打开终端（AI 主导）">AI 助手</button>
                                     <button @click="navigate('#/hosts/' + item.id)">编辑</button>
                                     <button @click="test(item)">测试</button>
                                     <button class="danger" @click="remove(item)">删除</button>
@@ -738,9 +757,12 @@ const appOptions = {
             props: {
                 hostId: { type: Number, required: true },
                 active: { type: Boolean, default: false },
+                headless: { type: Boolean, default: false },
             },
             emits: ['meta'],
             setup(props, { emit, expose }) {
+                const HEADLESS_COLS = 120;
+                const HEADLESS_ROWS = 40;
                 const terminalRef = ref(null);
                 const terminalSessionKey = ref(0);
                 const statusMessage = ref('准备连接...');
@@ -809,10 +831,20 @@ const appOptions = {
                 };
 
                 const recreateTerminal = async () => {
+                    if (props.headless) {
+                        return;
+                    }
                     destroyTerminal();
                     terminalSessionKey.value += 1;
                     await nextTick();
                     createTerminal();
+                };
+
+                const authColsRows = () => {
+                    if (props.headless || !term) {
+                        return { cols: HEADLESS_COLS, rows: HEADLESS_ROWS };
+                    }
+                    return { cols: term.cols, rows: term.rows };
                 };
 
                 const focusTerminal = () => {
@@ -875,7 +907,7 @@ const appOptions = {
                     connected.value = false;
                     connecting.value = false;
                     stopElapsedTimer();
-                    if (connectionAttempted && term) {
+                    if (connectionAttempted && term && !props.headless) {
                         term.writeln('');
                         term.writeln('[已退出] ' + reason);
                     }
@@ -908,10 +940,12 @@ const appOptions = {
                     pushMeta();
 
                     requestAnimationFrame(() => {
-                        if (!isCurrentGeneration(generation) || !term) {
+                        if (!isCurrentGeneration(generation)) {
                             return;
                         }
-                        fitTerminal();
+                        if (!props.headless) {
+                            fitTerminal();
+                        }
                     });
 
                     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -940,8 +974,11 @@ const appOptions = {
                                     if (!isCurrentGeneration(generation) || socket !== ws) {
                                         return;
                                     }
-                                    fitTerminal();
-                                    ws.send(JSON.stringify({ type: 'auth', cols: term.cols, rows: term.rows }));
+                                    if (!props.headless) {
+                                        fitTerminal();
+                                    }
+                                    const { cols, rows } = authColsRows();
+                                    ws.send(JSON.stringify({ type: 'auth', cols, rows }));
                                 });
                                 pushMeta();
                                 break;
@@ -957,19 +994,21 @@ const appOptions = {
                                 statusMessage.value = '已连接';
                                 startElapsedTimer();
                                 requestAnimationFrame(() => {
-                                    if (!isCurrentGeneration(generation) || !term) {
+                                    if (!isCurrentGeneration(generation)) {
                                         return;
                                     }
-                                    fitTerminal();
-                                    sendResize();
-                                    if (props.active) {
-                                        focusTerminal();
+                                    if (!props.headless && term) {
+                                        fitTerminal();
+                                        sendResize();
+                                        if (props.active) {
+                                            focusTerminal();
+                                        }
                                     }
                                 });
                                 pushMeta();
                                 break;
                             case 'output':
-                                if (payload.data && socket === ws) {
+                                if (payload.data && socket === ws && term && !props.headless) {
                                     const raw = atob(payload.data);
                                     const bytes = new Uint8Array(raw.length);
                                     for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
@@ -982,9 +1021,11 @@ const appOptions = {
                                 stopElapsedTimer();
                                 disconnectReason = payload.message || '连接失败';
                                 statusMessage.value = disconnectReason;
-                                term.writeln('\\r\\n[error] ' + disconnectReason);
-                                if (payload.detail) {
-                                    String(payload.detail).split('\\n').forEach((line) => term.writeln(line));
+                                if (term && !props.headless) {
+                                    term.writeln('\\r\\n[error] ' + disconnectReason);
+                                    if (payload.detail) {
+                                        String(payload.detail).split('\\n').forEach((line) => term.writeln(line));
+                                    }
                                 }
                                 pushMeta();
                                 break;
@@ -1026,7 +1067,7 @@ const appOptions = {
                     elapsed.value = 0;
                     disconnectReason = '手动断开';
                     statusMessage.value = '手动断开';
-                    if (term) {
+                    if (term && !props.headless) {
                         term.writeln('');
                         term.writeln('[已退出] 手动断开');
                     }
@@ -1041,7 +1082,7 @@ const appOptions = {
                 };
 
                 const fitIfActive = () => {
-                    if (!props.active || !term || !fitAddon) {
+                    if (props.headless || !props.active || !term || !fitAddon) {
                         return;
                     }
                     requestAnimationFrame(() => {
@@ -1078,7 +1119,7 @@ const appOptions = {
 
                 watch(() => props.active, fitIfActive);
 
-                expose({ reconnect, disconnect, connecting, connected, connId });
+                expose({ reconnect, disconnect, connecting, connected, connId, focus: focusTerminal });
 
                 return {
                     terminalRef,
@@ -1087,8 +1128,8 @@ const appOptions = {
                 };
             },
             template: `
-                <div class="terminal-pane" :class="{ active }">
-                    <div :key="terminalSessionKey" ref="terminalRef" class="terminal-wrap"></div>
+                <div class="terminal-pane" :class="{ active, 'terminal-pane-headless': headless }">
+                    <div v-if="!headless" :key="terminalSessionKey" ref="terminalRef" class="terminal-wrap"></div>
                 </div>
             `,
         },
@@ -1116,6 +1157,29 @@ const appOptions = {
                 let fitAddon = null;
                 let wheelEl = null;
                 let wheelHandler = null;
+                let resizeObserver = null;
+                let windowResizeHandler = null;
+
+                const teardownFitObservers = () => {
+                    if (windowResizeHandler) {
+                        window.removeEventListener('resize', windowResizeHandler);
+                        windowResizeHandler = null;
+                    }
+                    if (resizeObserver) {
+                        resizeObserver.disconnect();
+                        resizeObserver = null;
+                    }
+                };
+
+                const setupFitObservers = () => {
+                    teardownFitObservers();
+                    windowResizeHandler = () => fitLiveTerm();
+                    window.addEventListener('resize', windowResizeHandler);
+                    if (termRef.value && typeof ResizeObserver !== 'undefined') {
+                        resizeObserver = new ResizeObserver(() => fitLiveTerm());
+                        resizeObserver.observe(termRef.value);
+                    }
+                };
 
                 const decodeChunkBytes = (encoded) => {
                     if (!encoded) return null;
@@ -1157,7 +1221,9 @@ const appOptions = {
                     if (term) {
                         term.dispose();
                         term = null;
+                        fitAddon = null;
                     }
+                    teardownFitObservers();
                 };
 
                 const ensureTerm = () => {
@@ -1183,6 +1249,7 @@ const appOptions = {
                     }
                     term.open(termRef.value);
                     fitLiveTerm();
+                    setupFitObservers();
                     attachWheelScroll(termRef.value);
                     for (const [kind, data] of eventBuffer) {
                         handleEvent(kind, data);
@@ -1222,9 +1289,13 @@ const appOptions = {
                         return;
                     }
                     if (kind === 'resize') {
-                        cols = Math.max(1, data?.cols || cols);
-                        rows = Math.max(1, data?.rows || rows);
-                        term.resize(cols, rows);
+                        if (fitAddon) {
+                            fitLiveTerm();
+                        } else {
+                            cols = Math.max(1, data?.cols || cols);
+                            rows = Math.max(1, data?.rows || rows);
+                            term.resize(cols, rows);
+                        }
                         return;
                     }
                     if (kind === 'error') {
@@ -1280,6 +1351,22 @@ const appOptions = {
                     };
                 };
 
+                const resetLive = () => {
+                    if (!props.connId || !props.connected) return;
+                    eventBuffer = [];
+                    if (term) {
+                        term.clear();
+                    }
+                    closeStream();
+                    live.value = false;
+                    statusText.value = '重置中';
+                    nextTick(() => {
+                        ensureTerm();
+                        fitLiveTerm();
+                        openStream();
+                    });
+                };
+
                 const syncStream = () => {
                     if (!props.visible || !props.connId || !props.connected) {
                         closeStream();
@@ -1319,9 +1406,10 @@ const appOptions = {
                 onBeforeUnmount(() => {
                     closeStream();
                     destroyTerm();
+                    teardownFitObservers();
                 });
 
-                return { termRef, statusText, live, title: computed(() => props.title) };
+                return { termRef, statusText, live, title: computed(() => props.title), resetLive };
             },
             template: `
                 <div
@@ -1335,11 +1423,17 @@ const appOptions = {
                 >
                     <div v-if="!embedded" class="terminal-live-header">
                         <strong>实时现场</strong>
-                        <span class="live-lamp terminal-live-lamp" :class="{ live }"><i></i>{{ statusText }}</span>
+                        <div class="terminal-live-actions">
+                            <button type="button" class="terminal-live-reset" title="清空并重新连接" :disabled="!connected" @click="resetLive">重置</button>
+                            <span class="live-lamp terminal-live-lamp" :class="{ live }"><i></i>{{ statusText }}</span>
+                        </div>
                     </div>
                     <div v-if="embedded && !collapsed" class="terminal-live-header terminal-live-header-embedded">
                         <strong>实时现场</strong>
-                        <span class="live-lamp terminal-live-lamp" :class="{ live }"><i></i>{{ statusText }}</span>
+                        <div class="terminal-live-actions">
+                            <button type="button" class="terminal-live-reset" title="清空并重新连接" :disabled="!connected" @click="resetLive">重置</button>
+                            <span class="live-lamp terminal-live-lamp" :class="{ live }"><i></i>{{ statusText }}</span>
+                        </div>
                     </div>
                     <div v-if="!connected && !collapsed" class="ai-chat-hint">SSH 连接成功后显示终端输出</div>
                     <div v-show="connected && !collapsed" ref="termRef" class="terminal-live-term"></div>
@@ -1353,22 +1447,15 @@ const appOptions = {
                 visible: { type: Boolean, default: true },
                 paneActive: { type: Boolean, default: true },
                 title: { type: String, default: '' },
+                leftPane: { type: String, default: 'terminal' },
+                liveOnline: { type: Boolean, default: false },
             },
-            setup(props) {
-                const liveExpanded = ref(false);
-                const liveOnline = ref(false);
-                const liveStatusText = ref('等待连接');
-
-                const onLiveStatus = ({ live, statusText }) => {
-                    liveOnline.value = !!live;
-                    liveStatusText.value = statusText || '等待连接';
-                };
-
-                const toggleLive = () => {
-                    liveExpanded.value = !liveExpanded.value;
-                    if (liveExpanded.value) {
-                        requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
-                    }
+            emits: ['update:leftPane'],
+            setup(props, { emit }) {
+                const setLeftPane = (pane) => {
+                    if (pane === props.leftPane) return;
+                    emit('update:leftPane', pane);
+                    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
                 };
 
                 const toolCallsOpen = ref(false);
@@ -1486,13 +1573,18 @@ const appOptions = {
                 const chatBodyRef = ref(null);
                 const composing = ref(false);
                 let abortController = null;
+                let scrollRaf = 0;
 
                 const scrollToBottom = async () => {
                     await nextTick();
-                    const el = chatBodyRef.value || logRef.value;
-                    if (el) {
-                        el.scrollTop = el.scrollHeight;
-                    }
+                    if (scrollRaf) return;
+                    scrollRaf = requestAnimationFrame(() => {
+                        scrollRaf = 0;
+                        const el = chatBodyRef.value || logRef.value;
+                        if (el) {
+                            el.scrollTop = el.scrollHeight;
+                        }
+                    });
                 };
 
                 const consumeSse = async (response, onEvent) => {
@@ -1564,9 +1656,11 @@ const appOptions = {
                     if (last && last.role === 'assistant' && last.streaming) {
                         last.content += text;
                         last.html = (last.html || '') + text.replace(/\n/g, '<br>');
+                        scrollToBottom();
                         return;
                     }
                     messages.value.push({ role: 'assistant', content: text, html: text.replace(/\n/g, '<br>'), streaming: true });
+                    scrollToBottom();
                 };
 
                 const finalizeAssistant = (payload) => {
@@ -1601,6 +1695,7 @@ const appOptions = {
                     busy.value = true;
                     busyText.value = 'AI 思考中...';
                     errorText.value = '';
+                    scrollToBottom();
                     try {
                         const response = await fetch(url, {
                             method: 'POST',
@@ -1624,6 +1719,7 @@ const appOptions = {
                             if (event === 'tool') {
                                 recordToolEvent(data);
                                 busyText.value = '工具: ' + (data.label || data.name || '') + ' (' + (data.phase === 'call' ? '调用' : '完成') + ')';
+                                scrollToBottom();
                             }
                             if (event === 'approval') {
                                 approval.value = data;
@@ -1634,8 +1730,14 @@ const appOptions = {
                                 feedbackAnswers.value = {};
                                 scrollToBottom();
                             }
-                            if (event === 'done') finalizeAssistant(data);
-                            if (event === 'error') errorText.value = data.message || 'AI 错误';
+                            if (event === 'done') {
+                                finalizeAssistant(data);
+                                scrollToBottom();
+                            }
+                            if (event === 'error') {
+                                errorText.value = data.message || 'AI 错误';
+                                scrollToBottom();
+                            }
                         });
                     } catch (e) {
                         if (e.name !== 'AbortError') {
@@ -1728,11 +1830,6 @@ const appOptions = {
                 });
 
                 return {
-                    liveExpanded,
-                    liveOnline,
-                    liveStatusText,
-                    toggleLive,
-                    onLiveStatus,
                     toolCallsOpen,
                     toolCalls,
                     openToolCalls,
@@ -1757,6 +1854,7 @@ const appOptions = {
                     submitFeedback,
                     stopGeneration,
                     resetChat,
+                    setLeftPane,
                 };
             },
             template: `
@@ -1764,6 +1862,27 @@ const appOptions = {
                     <div class="ai-chat-header">
                         <div class="ai-chat-title">
                             <strong>AI 助手</strong>
+                            <div class="ai-pane-switch" role="tablist" aria-label="左侧视图">
+                                <button
+                                    type="button"
+                                    role="tab"
+                                    :aria-selected="leftPane === 'live'"
+                                    :class="{ active: leftPane === 'live' }"
+                                    title="左侧显示实时现场"
+                                    @click="setLeftPane('live')"
+                                >
+                                    <span class="live-lamp terminal-live-lamp" :class="{ live: liveOnline }"><i></i></span>
+                                    实时现场
+                                </button>
+                                <button
+                                    type="button"
+                                    role="tab"
+                                    :aria-selected="leftPane === 'terminal'"
+                                    :class="{ active: leftPane === 'terminal' }"
+                                    title="左侧显示交互终端"
+                                    @click="setLeftPane('terminal')"
+                                >终端</button>
+                            </div>
                             <button
                                 type="button"
                                 class="ai-live-toggle"
@@ -1773,17 +1892,6 @@ const appOptions = {
                             >
                                 工具调用
                                 <span v-if="toolCalls.length" class="ai-tool-count">{{ toolCalls.length }}</span>
-                            </button>
-                            <button
-                                type="button"
-                                class="ai-live-toggle"
-                                :class="{ active: liveExpanded }"
-                                :title="liveExpanded ? '收起实时现场' : '展开实时现场'"
-                                @click="toggleLive"
-                            >
-                                <span class="live-lamp terminal-live-lamp" :class="{ live: liveOnline }"><i></i></span>
-                                实时现场
-                                <span class="ai-live-chevron">{{ liveExpanded ? '▾' : '▸' }}</span>
                             </button>
                         </div>
                         <div class="actions">
@@ -1818,16 +1926,6 @@ const appOptions = {
                             </div>
                         </div>
                     </Teleport>
-                    <LiveSessionPane
-                        embedded
-                        :collapsed="!liveExpanded"
-                        :conn-id="connId"
-                        :connected="connected"
-                        :visible="visible"
-                        :pane-active="paneActive && liveExpanded"
-                        :title="title"
-                        @live-status="onLiveStatus"
-                    />
                     <div v-if="!connected" class="ai-chat-hint">SSH 连接成功后可用</div>
                     <div v-else-if="!enabled" class="ai-chat-hint">AI 助手未启用</div>
                     <div v-else-if="!configured" class="ai-chat-hint">请在 .env 配置 NEURON_AI_KEY</div>
@@ -1901,6 +1999,7 @@ const appOptions = {
             props: {
                 pendingHostId: { type: Number, default: null },
                 openNonce: { type: String, default: null },
+                openMode: { type: String, default: 'terminal' },
                 visible: { type: Boolean, default: true },
             },
             emits: ['flash'],
@@ -1927,7 +2026,7 @@ const appOptions = {
                     }
                 };
 
-                const openTab = async (hostId) => {
+                const openTab = async (hostId, mode = 'terminal') => {
                     if (!hostId) return;
 
                     let title = '主机 #' + hostId;
@@ -1948,9 +2047,13 @@ const appOptions = {
                         connecting: true,
                         connId: '',
                         elapsed: 0,
+                        leftPane: mode === 'ai' ? 'live' : 'terminal',
                     };
                     tabs.value.push(tab);
                     activateTab(tab.id);
+                    if (mode === 'ai') {
+                        mobilePane.value = 'ai';
+                    }
                     navigate('#/terminal');
                 };
 
@@ -1969,13 +2072,48 @@ const appOptions = {
 
                 const activeConnId = computed(() => activeTab.value?.connId || '');
                 const activeConnected = computed(() => !!activeTab.value?.connected);
+                const liveOnline = ref(false);
                 const mobilePane = ref('terminal');
                 const isMobile = ref(false);
 
+                const activeLeftPane = computed({
+                    get: () => activeTab.value?.leftPane || 'terminal',
+                    set: (pane) => {
+                        if (activeTab.value) {
+                            activeTab.value.leftPane = pane;
+                        }
+                    },
+                });
+
+                const setActiveLeftPane = (pane) => {
+                    activeLeftPane.value = pane;
+                    if (pane === 'terminal') {
+                        requestAnimationFrame(() => {
+                            window.dispatchEvent(new Event('resize'));
+                            activePane.value?.focus?.();
+                        });
+                    } else {
+                        requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+                    }
+                };
+
+                const onLiveStatus = ({ live }) => {
+                    liveOnline.value = !!live;
+                };
+
                 const setMobilePane = (pane) => {
                     mobilePane.value = pane;
-                    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+                    requestAnimationFrame(() => {
+                        window.dispatchEvent(new Event('resize'));
+                        if (pane === 'terminal' && activeLeftPane.value === 'terminal') {
+                            activePane.value?.focus?.();
+                        }
+                    });
                 };
+
+                const mobileLeftTabLabel = computed(() => (
+                    activeLeftPane.value === 'live' ? '实时现场' : '终端'
+                ));
 
                 onMounted(() => {
                     const mq = window.matchMedia('(max-width: 768px)');
@@ -2037,9 +2175,9 @@ const appOptions = {
                     dragOverIndex.value = null;
                 };
 
-                watch(() => [props.pendingHostId, props.openNonce], ([hostId]) => {
+                watch(() => [props.pendingHostId, props.openNonce, props.openMode], ([hostId, , mode]) => {
                     if (hostId) {
-                        openTab(hostId);
+                        openTab(hostId, mode || 'terminal');
                     }
                 }, { immediate: true });
 
@@ -2065,9 +2203,14 @@ const appOptions = {
                     visible: computed(() => props.visible),
                     activeConnId,
                     activeConnected,
+                    activeLeftPane,
+                    setActiveLeftPane,
+                    liveOnline,
+                    onLiveStatus,
                     mobilePane,
                     isMobile,
                     setMobilePane,
+                    mobileLeftTabLabel,
                 };
             },
             template: `
@@ -2120,7 +2263,7 @@ const appOptions = {
                             :aria-selected="mobilePane === 'terminal'"
                             :class="{ active: mobilePane === 'terminal' }"
                             @click="setMobilePane('terminal')"
-                        >终端</button>
+                        >{{ mobileLeftTabLabel }}</button>
                         <button
                             type="button"
                             role="tab"
@@ -2130,23 +2273,60 @@ const appOptions = {
                         >AI 助手</button>
                     </div>
 
+                    <div
+                        v-if="isMobile && activeTab && mobilePane === 'terminal'"
+                        class="mobile-left-pane-switch"
+                        role="tablist"
+                        aria-label="左侧视图切换"
+                    >
+                        <button
+                            type="button"
+                            role="tab"
+                            :aria-selected="activeLeftPane === 'live'"
+                            :class="{ active: activeLeftPane === 'live' }"
+                            @click="setActiveLeftPane('live')"
+                        >
+                            <span class="live-lamp terminal-live-lamp" :class="{ live: liveOnline }"><i></i></span>
+                            实时现场
+                        </button>
+                        <button
+                            type="button"
+                            role="tab"
+                            :aria-selected="activeLeftPane === 'terminal'"
+                            :class="{ active: activeLeftPane === 'terminal' }"
+                            @click="setActiveLeftPane('terminal')"
+                        >终端</button>
+                    </div>
+
                     <div class="terminal-body" :class="{ 'is-mobile': isMobile }">
                         <div
-                            class="terminal-stack"
+                            class="terminal-left-stack"
                             :class="{ 'pane-mobile-active': !isMobile || mobilePane === 'terminal' }"
                         >
-                            <TerminalPane
-                                v-for="tab in tabs"
-                                :key="tab.id"
-                                :ref="(instance) => setPaneRef(tab.id, instance)"
-                                :host-id="tab.hostId"
-                                :active="tab.id === activeTabId && visible"
-                                @meta="updateTabMeta(tab.id, $event)"
-                            />
-                            <div v-if="!tabs.length" class="terminal-empty">
-                                <p>暂无打开的终端标签。</p>
-                                <p>在「主机管理」中点击「登录」，或拖动上方标签栏排序已打开的连接。</p>
-                                <button class="primary" @click="openTabFromPicker">前往主机列表</button>
+                            <div v-show="activeLeftPane === 'live' && activeTab" class="terminal-left-live">
+                                <LiveSessionPane
+                                    :conn-id="activeConnId"
+                                    :connected="activeConnected"
+                                    :visible="!!activeTab"
+                                    :pane-active="!!activeTab && activeLeftPane === 'live' && (!isMobile || mobilePane === 'terminal')"
+                                    :title="activeTab?.title || ''"
+                                    @live-status="onLiveStatus"
+                                />
+                            </div>
+                            <div v-show="activeLeftPane === 'terminal'" class="terminal-stack">
+                                <TerminalPane
+                                    v-for="tab in tabs"
+                                    :key="tab.id"
+                                    :ref="(instance) => setPaneRef(tab.id, instance)"
+                                    :host-id="tab.hostId"
+                                    :active="tab.id === activeTabId && visible"
+                                    @meta="updateTabMeta(tab.id, $event)"
+                                />
+                                <div v-if="!tabs.length" class="terminal-empty">
+                                    <p>暂无打开的终端标签。</p>
+                                    <p>在「主机管理」中点击「登录」或「AI 助手」，或拖动上方标签栏排序已打开的连接。</p>
+                                    <button class="primary" @click="openTabFromPicker">前往主机列表</button>
+                                </div>
                             </div>
                         </div>
                         <div class="terminal-sidebar" :class="{ 'is-mobile': isMobile }">
@@ -2156,6 +2336,9 @@ const appOptions = {
                                 :visible="!!activeTab"
                                 :pane-active="!isMobile || mobilePane === 'ai'"
                                 :title="activeTab?.title || ''"
+                                :left-pane="activeLeftPane"
+                                :live-online="liveOnline"
+                                @update:left-pane="setActiveLeftPane"
                             />
                         </div>
                     </div>
@@ -2344,6 +2527,7 @@ const appOptions = {
                         handle.removeEventListener('pointerup', onUp);
                         handle.removeEventListener('pointercancel', onUp);
                         persistHostSize(panel);
+                        fitLivePanel(panel);
                     };
 
                     handle.addEventListener('pointermove', onMove);
@@ -2395,6 +2579,7 @@ const appOptions = {
                         if (row.panels.length === 2) {
                             persistRowSplits();
                         }
+                        fitLivePanel(panel);
                     };
 
                     handle.addEventListener('pointermove', onMove);
@@ -2443,6 +2628,7 @@ const appOptions = {
                         handle.removeEventListener('pointerup', onUp);
                         handle.removeEventListener('pointercancel', onUp);
                         persistRowSplits();
+                        fitRowPanels(row);
                     };
 
                     handle.addEventListener('pointermove', onMove);
@@ -2526,10 +2712,50 @@ const appOptions = {
                 };
 
                 const applyTerminalSize = (panel, cols, rows) => {
+                    if (panel.fitAddon) {
+                        fitLivePanel(panel);
+                        return;
+                    }
                     panel.cols = Math.max(1, cols || panel.cols || 80);
                     panel.rows = Math.max(1, rows || panel.rows || 24);
                     if (panel.term) {
                         panel.term.resize(panel.cols, panel.rows);
+                    }
+                };
+
+                const fitLivePanel = (panel) => {
+                    if (!panel.term || !panel.fitAddon || !panel.termEl) return;
+                    requestAnimationFrame(() => {
+                        try {
+                            panel.fitAddon.fit();
+                        } catch (_) {}
+                    });
+                };
+
+                const teardownPanelFitObservers = (panel) => {
+                    if (panel._windowResizeHandler) {
+                        window.removeEventListener('resize', panel._windowResizeHandler);
+                        panel._windowResizeHandler = null;
+                    }
+                    if (panel._resizeObserver) {
+                        panel._resizeObserver.disconnect();
+                        panel._resizeObserver = null;
+                    }
+                };
+
+                const setupPanelFitObservers = (panel) => {
+                    teardownPanelFitObservers(panel);
+                    panel._windowResizeHandler = () => fitLivePanel(panel);
+                    window.addEventListener('resize', panel._windowResizeHandler);
+                    if (panel.termEl && typeof ResizeObserver !== 'undefined') {
+                        panel._resizeObserver = new ResizeObserver(() => fitLivePanel(panel));
+                        panel._resizeObserver.observe(panel.termEl);
+                    }
+                };
+
+                const fitRowPanels = (row) => {
+                    for (const p of row.panels) {
+                        fitLivePanel(p);
                     }
                 };
 
@@ -2589,20 +2815,40 @@ const appOptions = {
                             brightBlack: '#6b7280',
                         },
                     });
+                    panel.fitAddon = null;
+                    if (typeof FitAddon !== 'undefined' && FitAddon.FitAddon) {
+                        panel.fitAddon = new FitAddon.FitAddon();
+                        term.loadAddon(panel.fitAddon);
+                    }
                     term.open(el);
                     panel.term = term;
                     panel.termEl = el;
                     attachLiveWheelScroll(panel, el);
+                    fitLivePanel(panel);
+                    setupPanelFitObservers(panel);
                     flushBufferedEvents(panel);
                 };
 
                 const destroyTerminal = (panel) => {
                     detachLiveWheelScroll(panel);
+                    teardownPanelFitObservers(panel);
                     if (panel.term) {
                         panel.term.dispose();
                         panel.term = null;
                         panel.termEl = null;
+                        panel.fitAddon = null;
                     }
+                };
+
+                const resetLivePanel = (panel) => {
+                    if (panel.ended) return;
+                    closeStream(panel);
+                    panel.eventBuffer = [];
+                    if (panel.term) {
+                        panel.term.clear();
+                    }
+                    openStream(panel);
+                    fitLivePanel(panel);
                 };
 
                 const writeStatus = (panel, text) => {
@@ -2714,7 +2960,7 @@ const appOptions = {
                         if (panel.ended) return;
                         const stillRunning = sessions.value.some((item) => item.id === panel.id && !item._finished);
                         if (!stillRunning) {
-                            writeStatus(panel, '连接已结束或流不可用。');
+                            markFinished(panel, 'disconnected', { message: '连接已结束或流不可用。' });
                             return;
                         }
                         if (panel.reconnectTimer) return;
@@ -2946,6 +3192,7 @@ const appOptions = {
                     startPanelCornerResize,
                     startRowSplitResize,
                     setTermRef,
+                    resetLivePanel,
                 };
             },
             template: `
@@ -2955,9 +3202,11 @@ const appOptions = {
                             <h2>实时窗口</h2>
                             <span class="live-lamp" :class="{ live: lampLive }"><i></i>{{ lampText }}</span>
                         </div>
-                        <button v-if="finishedCount > 0" type="button" @click="clearFinishedPanels">
-                            清除历史 ({{ finishedCount }})
-                        </button>
+                        <div class="live-head-actions">
+                            <button type="button" :disabled="finishedCount === 0" @click="clearFinishedPanels">
+                                清除历史<span v-if="finishedCount > 0"> ({{ finishedCount }})</span>
+                            </button>
+                        </div>
                     </div>
                     <div v-if="placeholderText && !orderedPanels.length" class="live-empty">{{ placeholderText }}</div>
                     <div v-else class="live-streams">
@@ -2983,6 +3232,13 @@ const appOptions = {
                                             <span class="row-actions">
                                                 <span class="age">{{ panel.age }}</span>
                                                 <button
+                                                    v-if="!panel.ended"
+                                                    type="button"
+                                                    class="live-reset"
+                                                    title="清空并重新连接"
+                                                    @click="resetLivePanel(panel)"
+                                                >↻</button>
+                                                <button
                                                     type="button"
                                                     class="live-pin"
                                                     :class="{ active: panel.pinned }"
@@ -2990,7 +3246,6 @@ const appOptions = {
                                                     @click="togglePin(panel.id)"
                                                 >📌</button>
                                                 <button
-                                                    v-if="panel.showDismiss"
                                                     type="button"
                                                     class="live-dismiss"
                                                     title="关闭"
@@ -3260,8 +3515,5 @@ appOptions.components.TerminalWorkspace.components = {
     TerminalPane: appOptions.components.TerminalPane,
     LiveSessionPane: appOptions.components.LiveSessionPane,
     AiChatPanel: appOptions.components.AiChatPanel,
-};
-appOptions.components.AiChatPanel.components = {
-    LiveSessionPane: appOptions.components.LiveSessionPane,
 };
 createApp(appOptions).mount('#app');
