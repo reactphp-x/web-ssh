@@ -89,13 +89,7 @@ final class BasicAuthHandler
         callable $next,
         string $username,
     ): ResponseInterface|PromiseInterface {
-        if ($this->loginRateLimiter === null) {
-            return $next($request->withAttribute('auth_user', $username));
-        }
-
-        return $this->loginRateLimiter
-            ->clear($this->loginBucket($request))
-            ->then(static fn () => $next($request->withAttribute('auth_user', $username)));
+        return $next($request->withAttribute('auth_user', $username));
     }
 
     private function unauthorizedResponse(): Response
