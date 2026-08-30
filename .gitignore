@@ -7,3 +7,5 @@
 /reactphp-x-web-ssh.access.log
 /storage/logs/
 /storage/*.sqlite
+/storage/*.sqlite-wal
+/storage/*.sqlite-shm
