@@ -50,6 +50,13 @@ final class SessionRepository
             ->then(static fn (): bool => true);
     }
 
+    public function setRecordingUrl(int $sessionId, string $recordingUrl): PromiseInterface
+    {
+        return $this->db
+            ->query('UPDATE sessions SET recording_url = ? WHERE id = ?', [$recordingUrl, $sessionId])
+            ->then(static fn (): bool => true);
+    }
+
     /**
      * @return PromiseInterface<array{items: list<array<string, mixed>>, total: int}>
      */

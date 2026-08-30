@@ -2129,6 +2129,14 @@ const appOptions = {
                 const total = ref(0);
                 const page = ref(1);
                 const perPage = 10;
+                const replayOpen = ref(false);
+                const replayTitle = ref('');
+                const replayMeta = ref('');
+                const replayLoading = ref(false);
+                const replayError = ref('');
+                const replayHost = ref(null);
+                let replayPlayer = null;
+                let replayAbort = false;
 
                 const load = async () => {
                     const data = await api.get('/api/sessions?page=' + page.value + '&per_page=' + perPage);
@@ -2136,15 +2144,122 @@ const appOptions = {
                     total.value = data.total;
                 };
 
-                onMounted(load);
+                const disposePlayer = () => {
+                    if (replayPlayer) {
+                        try {
+                            replayPlayer.dispose();
+                        } catch (_) {}
+                        replayPlayer = null;
+                    }
+                    if (replayHost.value) {
+                        replayHost.value.innerHTML = '';
+                    }
+                };
 
-                return { items, total, page, perPage, load };
+                const closeReplay = () => {
+                    replayAbort = true;
+                    disposePlayer();
+                    replayOpen.value = false;
+                    replayLoading.value = false;
+                    replayError.value = '';
+                };
+
+                const waitForPlayerEnd = (player) => new Promise((resolve) => {
+                    const onEnded = () => {
+                        player.removeEventListener('ended', onEnded);
+                        resolve();
+                    };
+                    player.addEventListener('ended', onEnded);
+                });
+
+                const playRecordingParts = async (parts, manifest) => {
+                    if (!replayHost.value || typeof AsciinemaPlayer === 'undefined') {
+                        throw new Error('回放组件未加载');
+                    }
+
+                    for (let index = 0; index < parts.length; index++) {
+                        if (replayAbort) {
+                            return;
+                        }
+
+                        disposePlayer();
+                        replayMeta.value = parts.length > 1
+                            ? ('分片 ' + (index + 1) + ' / ' + parts.length)
+                            : '';
+
+                        replayPlayer = AsciinemaPlayer.create(parts[index].url, replayHost.value, {
+                            cols: manifest.cols || 80,
+                            rows: manifest.rows || 24,
+                            autoPlay: true,
+                            preload: true,
+                            speed: 1,
+                            fit: 'both',
+                            theme: 'asciinema',
+                            controls: true,
+                        });
+
+                        await waitForPlayerEnd(replayPlayer);
+                    }
+                };
+
+                const openReplay = async (item) => {
+                    if (!item.recording_url) {
+                        return;
+                    }
+
+                    replayAbort = false;
+                    replayOpen.value = true;
+                    replayLoading.value = true;
+                    replayError.value = '';
+                    replayTitle.value = (item.host_name || item.host_address || ('会话 #' + item.id));
+                    replayMeta.value = '加载回放...';
+
+                    try {
+                        const data = await api.get('/api/sessions/' + item.id + '/recording');
+                        const parts = data.parts || [];
+                        const manifest = data.manifest || {};
+                        if (!parts.length) {
+                            throw new Error('没有可用的回放分片');
+                        }
+
+                        replayLoading.value = false;
+                        await nextTick();
+                        await playRecordingParts(parts, manifest);
+                        if (!replayAbort) {
+                            replayMeta.value = '回放结束';
+                        }
+                    } catch (error) {
+                        replayError.value = error.message || '加载回放失败';
+                        replayMeta.value = '';
+                    } finally {
+                        replayLoading.value = false;
+                    }
+                };
+
+                onMounted(load);
+                onBeforeUnmount(closeReplay);
+
+                return {
+                    items,
+                    total,
+                    page,
+                    perPage,
+                    load,
+                    replayOpen,
+                    replayTitle,
+                    replayMeta,
+                    replayLoading,
+                    replayError,
+                    replayHost,
+                    openReplay,
+                    closeReplay,
+                };
             },
             template: `
                 <div class="panel">
                     <h2>会话记录</h2>
                     <table>
-                        <thead><tr><th>用户</th><th>主机</th><th>状态</th><th>开始</th><th>结束</th><th>时长</th><th>错误</th></tr></thead>
+                        <thead><tr><th>用户</th><th>主机</th><th>状态</th><th>开始</th><th>结束</th><th>时长</th><th>回放</th><th>错误</th></tr></thead>
                         <tbody>
                             <tr v-for="item in items" :key="item.id">
                                 <td>{{ item.username }}</td>
@@ -2153,15 +2268,41 @@ const appOptions = {
                                 <td>{{ item.start_time }}</td>
                                 <td>{{ item.end_time || '-' }}</td>
                                 <td>{{ item.duration ?? '-' }}</td>
+                                <td>
+                                    <button
+                                        v-if="item.recording_url"
+                                        type="button"
+                                        class="btn-link"
+                                        @click="openReplay(item)"
+                                    >回放</button>
+                                    <span v-else>-</span>
+                                </td>
                                 <td>{{ item.error_message || '-' }}</td>
                             </tr>
-                            <tr v-if="!items.length"><td colspan="7">暂无会话记录</td></tr>
+                            <tr v-if="!items.length"><td colspan="8">暂无会话记录</td></tr>
                         </tbody>
                     </table>
                     <div class="pagination">
                         <button :disabled="page <= 1" @click="page--; load()">上一页</button>
                         <span>第 {{ page }} 页 / 共 {{ Math.ceil(total / perPage) || 1 }} 页</span>
                         <button :disabled="page * perPage >= total" @click="page++; load()">下一页</button>
+                    </div>
+
+                    <div v-if="replayOpen" class="replay-overlay" @click.self="closeReplay">
+                        <div class="replay-dialog">
+                            <div class="replay-head">
+                                <div>
+                                    <h3>会话回放 · {{ replayTitle }}</h3>
+                                    <p>{{ replayMeta }}</p>
+                                </div>
+                                <button type="button" class="replay-close" @click="closeReplay">关闭</button>
+                            </div>
+                            <div class="replay-body">
+                                <div v-if="replayLoading" class="live-empty">正在加载回放...</div>
+                                <div v-else-if="replayError" class="message err">{{ replayError }}</div>
+                                <div ref="replayHost" class="replay-host"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             `,

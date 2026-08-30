@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Ssh;
 
 use App\Http\RequestAuth;
+use App\Recording\SessionRecorder;
 use App\Service\HostService;
 use App\Service\SessionService;
 use App\Support\WorkerLog;
@@ -30,6 +31,7 @@ final class SshTerminalGateway
         private readonly HostService $hostService,
         private readonly SessionService $sessionService,
         private readonly SshLiveRegistry $liveRegistry,
+        private readonly ?SessionRecorder $recorder = null,
     ) {
     }
 
@@ -138,6 +140,10 @@ final class SshTerminalGateway
         }
 
         if ($type === 'input') {
+            $sessionId = $this->connectionSessions[$from->_id] ?? null;
+            if ($sessionId !== null) {
+                $this->recorder?->writeInput($sessionId, (string) ($payload['data'] ?? ''));
+            }
             $session->write((string) ($payload['data'] ?? ''));
 
             return;
@@ -146,6 +152,10 @@ final class SshTerminalGateway
         if ($type === 'resize') {
             $cols = max(1, (int) ($payload['cols'] ?? 80));
             $rows = max(1, (int) ($payload['rows'] ?? 24));
+            $sessionId = $this->connectionSessions[$from->_id] ?? null;
+            if ($sessionId !== null) {
+                $this->recorder?->resize($sessionId, $cols, $rows);
+            }
             $this->liveRegistry->writeResize($from->_id, $cols, $rows);
             $session->resize($cols, $rows);
 
@@ -195,13 +205,17 @@ final class SshTerminalGateway
                         $rows = max(1, (int) ($payload['rows'] ?? 24));
                         $this->liveRegistry->writeResize($conn->_id, $cols, $rows);
 
+                        $title = (string) ($pending['host']['name'] ?? $pending['host']['address'] ?? ('session-' . $sessionId));
+                        $this->recorder?->start($sessionId, $cols, $rows, $title);
+
                         $session = new SshTerminalSession();
                         $this->sessions[$conn->_id] = $session;
 
                         $session->connect(
                             $target,
-                            onOutput: function (string $chunk) use ($conn): void {
+                            onOutput: function (string $chunk) use ($conn, $sessionId): void {
                                 $this->liveRegistry->writeOutput($conn->_id, $chunk);
+                                $this->recorder?->writeOutput($sessionId, $chunk);
                                 $this->sendJson($conn, [
                                     'type' => 'output',
                                     'data' => base64_encode($chunk),
@@ -240,6 +254,7 @@ final class SshTerminalGateway
                                 $error = SshErrorFormatter::format($exception, $target, $verbose);
 
                                 $this->sessionService->markFailed($sessionId, $error['message']);
+                                $this->recorder?->finish($sessionId);
 
                                 WorkerLog::error(sprintf(
                                     'SSH failed conn=%s target=%s@%s:%d',
@@ -262,7 +277,7 @@ final class SshTerminalGateway
                                     'exception' => $error['exception'],
                                 ]);
                             },
-                            onExit: function () use ($conn): void {
+                            onExit: function () use ($conn, $sessionId): void {
                                 $session = $this->sessions[$conn->_id] ?? null;
                                 if ($session === null) {
                                     return;
@@ -274,6 +289,8 @@ final class SshTerminalGateway
                                     $this->sessionService->markClosed($this->connectionSessions[$conn->_id]);
                                     unset($this->connectionSessions[$conn->_id]);
                                 }
+
+                                $this->recorder?->finish($sessionId);
 
                                 WorkerLog::info(sprintf('SSH exited conn=%s', $conn->_id));
 
@@ -306,6 +323,7 @@ final class SshTerminalGateway
     private function handleClose(ConnectionInterface $conn): void
     {
         $pending = $this->pending[$conn->_id] ?? null;
+        $sessionId = $this->connectionSessions[$conn->_id] ?? ($pending['session_id'] ?? null);
         if ($pending !== null && ($pending['session_id'] ?? null) !== null) {
             $this->sessionService->markFailed((int) $pending['session_id'], '连接中断');
         }
@@ -317,6 +335,10 @@ final class SshTerminalGateway
         if (isset($this->connectionSessions[$conn->_id])) {
             $this->sessionService->markClosed($this->connectionSessions[$conn->_id]);
             unset($this->connectionSessions[$conn->_id]);
+        }
+
+        if ($sessionId !== null) {
+            $this->recorder?->finish((int) $sessionId);
         }
 
         $session = $this->sessions[$conn->_id] ?? null;

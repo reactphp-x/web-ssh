@@ -36,7 +36,7 @@
 - **主机管理** — SQLite 存储主机、分组、标签；密码/私钥加密保存，支持跳板机
 - **Web 终端** — xterm.js 多标签 PTY，OpenSSH 子进程连接远端；支持 **TUI 交互程序**（如 Claude Code、Cursor Agent 等）
 - **实时现场** — SSE 旁路观看正在进行的 SSH 会话
-- **会话记录** — 连接起止、状态、耗时
+- **会话记录** — 连接起止、状态、耗时；asciinema 格式终端录像回放
 - **操作审计** — 主机增删改等 API 操作日志
 - **登录鉴权** — HTTP Basic Auth + TOTP 双因子（可选 Cookie 登录页）
 - **速率限制** — 登录与 TOTP 失败锁定
@@ -124,8 +124,32 @@ docker compose up --build
 3. 在 **主机管理** 中新建/编辑主机（地址、端口、用户名、密码或私钥、可选跳板机）
 4. 进入 **终端**，选择主机建立 SSH 会话；可在 shell 中运行 `claude`、`cursor agent` 等 TUI 程序
 5. **实时现场** 可观看当前进行中的连接；**会话记录** / **操作日志** 查看历史
+6. 在 **会话记录** 中，若该次连接有录像，点击 **回放** 可在浏览器内播放 asciinema 终端录像
 
 未登录访问 `/` 会重定向到 `/login`；点击 **退出** 清除登录与 2FA Cookie。
+
+## 会话录像与回放
+
+SSH 连接建立后，服务端会自动将终端 **输出** 写入 asciinema cast v2 文件（`storage/recordings/{session_id}/`），会话结束时生成 `manifest.json` 并在数据库中标记 `recording_url`。
+
+| 项目 | 说明 |
+|---|---|
+| 格式 | asciinema cast v2（`.cast`），大文件自动分片 `part-001.cast`、`part-002.cast` … |
+| 内容 | 仅录制终端输出（含 echo）；不录键盘输入与 xterm 焦点/鼠标协议，避免回放卡顿 |
+| 时间轴 | 每条事件为距会话开始的绝对秒数，与列表中的会话时长一致 |
+| 回放 | 会话记录页点击 **回放**；播放器自动缩放适配窗口（`fit: both`） |
+| 鉴权 | 与 REST API 相同，需 Basic Auth + 2FA Cookie |
+
+相关 API（均需登录）：
+
+```text
+GET /api/sessions/{id}/recording              # manifest + 分片 URL 列表
+GET /api/sessions/{id}/recording/part-001.cast  # 单个 cast 分片
+```
+
+可通过环境变量关闭或调整存储路径（见下方 **配置**）。录像文件默认不纳入 git（`storage/recordings/`）。
+
+> **说明**：btop 等使用 `\033[?2026h` 同步刷新的 TUI，录制端会等待整帧输出后再落盘，以保证回放画面完整。升级录制逻辑前产生的旧录像，时间轴或画面可能不正确，需重新连接生成新录像。
 
 ## 认证说明
 
@@ -183,6 +207,11 @@ COOKIE_SECURE=false
 BASIC_AUTH_USER=admin
 BASIC_AUTH_PASSWORD=change-me
 BASIC_AUTH_PUBLIC_PATHS=/health,/logout,/login
+
+# 会话录像（asciinema cast，默认开启）
+SESSION_RECORDING_ENABLED=true
+SESSION_RECORDING_DIR=storage/recordings
+SESSION_RECORDING_PART_BYTES=5242880
 ```
 
 全局 SSH 候选密钥列表见 `config/ssh.php` 的 `identity_candidates`。

@@ -11,6 +11,8 @@ use App\Config\SshConfig;
 use App\Database\SqliteClientFactory;
 use App\Http\JsonErrorHandler;
 use App\Middleware\TwoFactorAuthHandler;
+use App\Recording\SessionRecordingConfig;
+use App\Recording\SessionRecorder;
 use App\Repository\AuditLogRepository;
 use App\Repository\AuthRateLimitRepository;
 use App\Repository\HostGroupRepository;
@@ -78,6 +80,8 @@ final class WebAppFactory
         $audit = new AuditService($auditLogs);
         $sessionService = new SessionService($sessions);
         $probe = new SshProbeService();
+        $recordingConfig = SessionRecordingConfig::load($env);
+        $sessionRecorder = new SessionRecorder($recordingConfig, $sessions);
         $liveRegistry = new SshLiveRegistry();
         $basicAuth = BasicAuthConfig::load($env, $loginRateLimiter)->handler();
         $twoFactorEnabled = $basicAuth !== null;
@@ -105,8 +109,9 @@ final class WebAppFactory
             $twoFactorEnabled ? $loginRateLimiter : null,
         );
         $live = new LiveController($liveRegistry);
+        $recording = new RecordingController($sessions, $sessionRecorder);
 
-        $gateway = new SshTerminalGateway($connectionGroup, $hostService, $sessionService, $liveRegistry);
+        $gateway = new SshTerminalGateway($connectionGroup, $hostService, $sessionService, $liveRegistry, $sessionRecorder);
         $gateway->register();
 
         $wsMiddleware = new WebsocketGroupMiddleware($connectionGroup);
@@ -166,6 +171,8 @@ final class WebAppFactory
 
         $app->get('/api/sessions', static fn (ServerRequestInterface $request) => $api->listSessions($request));
         $app->get('/api/sessions/{id:\d+}', static fn (ServerRequestInterface $request) => $api->getSession(self::routeInt($request, 'id')));
+        $app->get('/api/sessions/{id:\d+}/recording', static fn (ServerRequestInterface $request) => $recording->manifest($request));
+        $app->get('/api/sessions/{id:\d+}/recording/{part:part-\d+\.cast}', static fn (ServerRequestInterface $request) => $recording->part($request));
         $app->get('/api/audit-logs', static fn (ServerRequestInterface $request) => $api->listAuditLogs($request));
 
         $app->get('/api/live/sessions', static fn (ServerRequestInterface $request) => $live->listSessions($request));
