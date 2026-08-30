@@ -1447,17 +1447,8 @@ const appOptions = {
                 visible: { type: Boolean, default: true },
                 paneActive: { type: Boolean, default: true },
                 title: { type: String, default: '' },
-                leftPane: { type: String, default: 'terminal' },
-                liveOnline: { type: Boolean, default: false },
             },
-            emits: ['update:leftPane'],
-            setup(props, { emit }) {
-                const setLeftPane = (pane) => {
-                    if (pane === props.leftPane) return;
-                    emit('update:leftPane', pane);
-                    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
-                };
-
+            setup(props) {
                 const toolCallsOpen = ref(false);
                 const toolCalls = ref([]);
 
@@ -1568,7 +1559,65 @@ const appOptions = {
                 const approval = ref(null);
                 const feedback = ref(null);
                 const feedbackAnswers = ref({});
+                const feedbackOtherTexts = ref({});
                 const errorText = ref('');
+
+                const OTHER_OPTION_VALUES = new Set(['other', 'other_custom', 'custom']);
+
+                const isOtherOption = (opt) => {
+                    const value = String(opt?.value || '').toLowerCase();
+                    if (OTHER_OPTION_VALUES.has(value) || value.endsWith('_other')) {
+                        return true;
+                    }
+                    return String(opt?.label || '').includes('其他');
+                };
+
+                const isOtherValue = (value) => {
+                    const normalized = String(value || '').toLowerCase();
+                    return OTHER_OPTION_VALUES.has(normalized) || normalized.endsWith('_other');
+                };
+
+                const toggleFeedbackCheckbox = (field, opt, checked) => {
+                    const current = Array.isArray(feedbackAnswers.value[field.id])
+                        ? [...feedbackAnswers.value[field.id]]
+                        : [];
+                    feedbackAnswers.value[field.id] = checked
+                        ? [...current, opt.value]
+                        : current.filter((value) => value !== opt.value);
+                    if (!checked && isOtherOption(opt)) {
+                        feedbackOtherTexts.value[field.id] = '';
+                    }
+                };
+
+                const buildFeedbackAnswers = () => {
+                    const answers = { ...feedbackAnswers.value };
+                    for (const field of feedback.value?.fields || []) {
+                        const otherText = String(feedbackOtherTexts.value[field.id] || '').trim();
+                        if (field.type === 'radio' && isOtherValue(answers[field.id])) {
+                            answers[field.id] = otherText ? `其他：${otherText}` : '其他';
+                            continue;
+                        }
+                        if (field.type === 'checkbox' && Array.isArray(answers[field.id])) {
+                            const selected = answers[field.id].filter((value) => !isOtherValue(value));
+                            if (answers[field.id].some((value) => isOtherValue(value))) {
+                                answers[field.id] = otherText
+                                    ? [...selected, `其他：${otherText}`]
+                                    : [...selected, '其他'];
+                            }
+                        }
+                    }
+                    return answers;
+                };
+
+                const resetFeedbackForm = () => {
+                    feedbackAnswers.value = {};
+                    feedbackOtherTexts.value = {};
+                };
+
+                const feedbackOptionLetter = (index) => {
+                    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+                    return index >= 0 && index < letters.length ? letters[index] : String(index + 1);
+                };
                 const logRef = ref(null);
                 const chatBodyRef = ref(null);
                 const composing = ref(false);
@@ -1643,7 +1692,7 @@ const appOptions = {
                         toolCalls.value = normalizeToolCalls(json.data?.tool_calls);
                         approval.value = json.data?.approval || null;
                         feedback.value = json.data?.feedback || null;
-                        feedbackAnswers.value = {};
+                        resetFeedbackForm();
                         errorText.value = '';
                         await scrollToBottom();
                     } catch (e) {
@@ -1727,7 +1776,7 @@ const appOptions = {
                             }
                             if (event === 'feedback') {
                                 feedback.value = data;
-                                feedbackAnswers.value = {};
+                                resetFeedbackForm();
                                 scrollToBottom();
                             }
                             if (event === 'done') {
@@ -1775,15 +1824,29 @@ const appOptions = {
                 const submitFeedback = async () => {
                     if (!props.connId || busy.value || !feedback.value) return;
                     messages.value.push({ role: 'user', content: '已提交反馈', html: '已提交反馈' });
-                    const answers = { ...feedbackAnswers.value };
+                    const answers = buildFeedbackAnswers();
                     feedback.value = null;
-                    feedbackAnswers.value = {};
+                    resetFeedbackForm();
                     await scrollToBottom();
                     await runStream('/api/ai/chat/feedback/stream', {
                         conn_id: props.connId,
                         answers,
                     });
                 };
+
+                const skipFeedback = async () => {
+                    if (!props.connId || busy.value || !feedback.value) return;
+                    messages.value.push({ role: 'user', content: '已跳过反馈', html: '已跳过反馈' });
+                    feedback.value = null;
+                    resetFeedbackForm();
+                    await scrollToBottom();
+                    await runStream('/api/ai/chat/feedback/stream', {
+                        conn_id: props.connId,
+                        skip: true,
+                    });
+                };
+
+                const composerDisabled = computed(() => busy.value || !props.connected || !configured.value || !!approval.value || !!feedback.value);
 
                 const stopGeneration = async () => {
                     abortController?.abort();
@@ -1799,7 +1862,7 @@ const appOptions = {
                     toolCallsOpen.value = false;
                     approval.value = null;
                     feedback.value = null;
-                    feedbackAnswers.value = {};
+                    resetFeedbackForm();
                     await bootstrap();
                 };
 
@@ -1820,6 +1883,7 @@ const appOptions = {
                     toolCallsOpen.value = false;
                     approval.value = null;
                     feedback.value = null;
+                    resetFeedbackForm();
                     bootstrap();
                 }, { immediate: true });
 
@@ -1844,6 +1908,10 @@ const appOptions = {
                     approval,
                     feedback,
                     feedbackAnswers,
+                    feedbackOtherTexts,
+                    isOtherOption,
+                    toggleFeedbackCheckbox,
+                    feedbackOptionLetter,
                     errorText,
                     logRef,
                     chatBodyRef,
@@ -1852,9 +1920,10 @@ const appOptions = {
                     onComposerKeydown,
                     submitApproval,
                     submitFeedback,
+                    skipFeedback,
+                    composerDisabled,
                     stopGeneration,
                     resetChat,
-                    setLeftPane,
                 };
             },
             template: `
@@ -1862,27 +1931,6 @@ const appOptions = {
                     <div class="ai-chat-header">
                         <div class="ai-chat-title">
                             <strong>AI 助手</strong>
-                            <div class="ai-pane-switch" role="tablist" aria-label="左侧视图">
-                                <button
-                                    type="button"
-                                    role="tab"
-                                    :aria-selected="leftPane === 'live'"
-                                    :class="{ active: leftPane === 'live' }"
-                                    title="左侧显示实时现场"
-                                    @click="setLeftPane('live')"
-                                >
-                                    <span class="live-lamp terminal-live-lamp" :class="{ live: liveOnline }"><i></i></span>
-                                    实时现场
-                                </button>
-                                <button
-                                    type="button"
-                                    role="tab"
-                                    :aria-selected="leftPane === 'terminal'"
-                                    :class="{ active: leftPane === 'terminal' }"
-                                    title="左侧显示交互终端"
-                                    @click="setLeftPane('terminal')"
-                                >终端</button>
-                            </div>
                             <button
                                 type="button"
                                 class="ai-live-toggle"
@@ -1950,31 +1998,74 @@ const appOptions = {
                         </div>
                         <div v-if="feedback" class="ai-feedback">
                             <h4>{{ feedback.message || '请回答' }}</h4>
+                            <p class="ai-feedback-note">可按需填写后提交；不回答可点「跳过」继续对话。</p>
+                            <div class="ai-feedback-form">
                             <div v-for="field in feedback.fields || []" :key="field.id" class="ai-field">
-                                <label>{{ field.label }}</label>
+                                <label>
+                                    {{ field.label }}
+                                    <span v-if="field.required" class="ai-field-required">（必填）</span>
+                                    <span v-else class="ai-field-optional">（选填）</span>
+                                </label>
+                                <p class="ai-field-hint">选项以 A、B、C… 标记；选「其他」时可输入如 AB 表示组合选项</p>
                                 <div v-if="field.type === 'radio' || field.type === 'select'" class="ai-options">
-                                    <label v-for="opt in field.options || []" :key="opt.value" class="ai-option">
-                                        <input type="radio" :name="'fb-' + field.id" :value="opt.value" v-model="feedbackAnswers[field.id]">
-                                        {{ opt.label }}
+                                    <label
+                                        v-for="(opt, oi) in field.options || []"
+                                        :key="opt.value"
+                                        class="ai-option"
+                                        :class="{ 'ai-option-other': isOtherOption(opt) }"
+                                    >
+                                        <input
+                                            type="radio"
+                                            :name="'fb-' + field.id"
+                                            :value="opt.value"
+                                            v-model="feedbackAnswers[field.id]"
+                                            @change="!isOtherOption(opt) && (feedbackOtherTexts[field.id] = '')"
+                                        >
+                                        <span class="ai-option-index">{{ feedbackOptionLetter(oi) }}</span>
+                                        <span class="ai-option-label">{{ opt.label }}</span>
+                                        <input
+                                            v-if="isOtherOption(opt) && feedbackAnswers[field.id] === opt.value"
+                                            type="text"
+                                            class="ai-feedback-other"
+                                            v-model="feedbackOtherTexts[field.id]"
+                                            placeholder="例如 AB，或补充说明"
+                                            @click.stop
+                                        >
                                     </label>
                                 </div>
                                 <div v-else-if="field.type === 'checkbox'" class="ai-options">
-                                    <label v-for="opt in field.options || []" :key="opt.value" class="ai-option">
-                                        <input type="checkbox" :value="opt.value" @change="(e) => {
-                                            const cur = feedbackAnswers[field.id] || [];
-                                            feedbackAnswers[field.id] = e.target.checked
-                                                ? [...cur, opt.value]
-                                                : cur.filter(v => v !== opt.value);
-                                        }">
-                                        {{ opt.label }}
+                                    <label
+                                        v-for="(opt, oi) in field.options || []"
+                                        :key="opt.value"
+                                        class="ai-option"
+                                        :class="{ 'ai-option-other': isOtherOption(opt) }"
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            :value="opt.value"
+                                            :checked="(feedbackAnswers[field.id] || []).includes(opt.value)"
+                                            @change="toggleFeedbackCheckbox(field, opt, $event.target.checked)"
+                                        >
+                                        <span class="ai-option-index">{{ feedbackOptionLetter(oi) }}</span>
+                                        <span class="ai-option-label">{{ opt.label }}</span>
+                                        <input
+                                            v-if="isOtherOption(opt) && (feedbackAnswers[field.id] || []).includes(opt.value)"
+                                            type="text"
+                                            class="ai-feedback-other"
+                                            v-model="feedbackOtherTexts[field.id]"
+                                            placeholder="例如 AB，或补充说明"
+                                            @click.stop
+                                        >
                                     </label>
                                 </div>
                             </div>
+                            </div>
                             <div class="actions">
+                                <button type="button" @click="skipFeedback" :disabled="busy">跳过</button>
                                 <button class="primary" type="button" @click="submitFeedback" :disabled="busy">提交</button>
                             </div>
                         </div>
-                        <div class="ai-composer">
+                        <div v-if="!approval && !feedback" class="ai-composer">
                             <textarea
                                 v-model="draft"
                                 rows="2"
@@ -1985,10 +2076,10 @@ const appOptions = {
                                 @compositionstart="composing = true"
                                 @compositionend="composing = false"
                                 @keydown="onComposerKeydown"
-                                :disabled="busy || !connected || !configured"
+                                :disabled="composerDisabled"
                             ></textarea>
                             <div class="ai-composer-actions">
-                                <button class="primary ai-send-btn" type="button" @click="sendMessage" :disabled="busy || !draft.trim() || !connected || !configured">发送</button>
+                                <button class="primary ai-send-btn" type="button" @click="sendMessage" :disabled="composerDisabled || !draft.trim()">发送</button>
                             </div>
                         </div>
                     </div>
@@ -2087,14 +2178,12 @@ const appOptions = {
 
                 const setActiveLeftPane = (pane) => {
                     activeLeftPane.value = pane;
-                    if (pane === 'terminal') {
-                        requestAnimationFrame(() => {
-                            window.dispatchEvent(new Event('resize'));
+                    requestAnimationFrame(() => {
+                        window.dispatchEvent(new Event('resize'));
+                        if (pane === 'terminal') {
                             activePane.value?.focus?.();
-                        });
-                    } else {
-                        requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
-                    }
+                        }
+                    });
                 };
 
                 const onLiveStatus = ({ live }) => {
@@ -2273,59 +2362,60 @@ const appOptions = {
                         >AI 助手</button>
                     </div>
 
-                    <div
-                        v-if="isMobile && activeTab && mobilePane === 'terminal'"
-                        class="mobile-left-pane-switch"
-                        role="tablist"
-                        aria-label="左侧视图切换"
-                    >
-                        <button
-                            type="button"
-                            role="tab"
-                            :aria-selected="activeLeftPane === 'live'"
-                            :class="{ active: activeLeftPane === 'live' }"
-                            @click="setActiveLeftPane('live')"
-                        >
-                            <span class="live-lamp terminal-live-lamp" :class="{ live: liveOnline }"><i></i></span>
-                            实时现场
-                        </button>
-                        <button
-                            type="button"
-                            role="tab"
-                            :aria-selected="activeLeftPane === 'terminal'"
-                            :class="{ active: activeLeftPane === 'terminal' }"
-                            @click="setActiveLeftPane('terminal')"
-                        >终端</button>
-                    </div>
-
                     <div class="terminal-body" :class="{ 'is-mobile': isMobile }">
                         <div
-                            class="terminal-left-stack"
+                            class="terminal-left-column"
                             :class="{ 'pane-mobile-active': !isMobile || mobilePane === 'terminal' }"
                         >
-                            <div v-show="activeLeftPane === 'live' && activeTab" class="terminal-left-live">
-                                <LiveSessionPane
-                                    :conn-id="activeConnId"
-                                    :connected="activeConnected"
-                                    :visible="!!activeTab"
-                                    :pane-active="!!activeTab && activeLeftPane === 'live' && (!isMobile || mobilePane === 'terminal')"
-                                    :title="activeTab?.title || ''"
-                                    @live-status="onLiveStatus"
-                                />
+                            <div
+                                v-if="activeTab && (!isMobile || mobilePane === 'terminal')"
+                                class="left-pane-switch"
+                                role="tablist"
+                                aria-label="左侧视图切换"
+                            >
+                                <button
+                                    type="button"
+                                    role="tab"
+                                    :aria-selected="activeLeftPane === 'live'"
+                                    :class="{ active: activeLeftPane === 'live' }"
+                                    @click="setActiveLeftPane('live')"
+                                >
+                                    <span class="live-lamp terminal-live-lamp" :class="{ live: liveOnline }"><i></i></span>
+                                    实时现场
+                                </button>
+                                <button
+                                    type="button"
+                                    role="tab"
+                                    :aria-selected="activeLeftPane === 'terminal'"
+                                    :class="{ active: activeLeftPane === 'terminal' }"
+                                    @click="setActiveLeftPane('terminal')"
+                                >终端</button>
                             </div>
-                            <div v-show="activeLeftPane === 'terminal'" class="terminal-stack">
-                                <TerminalPane
-                                    v-for="tab in tabs"
-                                    :key="tab.id"
-                                    :ref="(instance) => setPaneRef(tab.id, instance)"
-                                    :host-id="tab.hostId"
-                                    :active="tab.id === activeTabId && visible"
-                                    @meta="updateTabMeta(tab.id, $event)"
-                                />
-                                <div v-if="!tabs.length" class="terminal-empty">
-                                    <p>暂无打开的终端标签。</p>
-                                    <p>在「主机管理」中点击「登录」或「AI 助手」，或拖动上方标签栏排序已打开的连接。</p>
-                                    <button class="primary" @click="openTabFromPicker">前往主机列表</button>
+                            <div class="terminal-left-stack">
+                                <div v-show="activeLeftPane === 'live' && activeTab" class="terminal-left-live">
+                                    <LiveSessionPane
+                                        :conn-id="activeConnId"
+                                        :connected="activeConnected"
+                                        :visible="!!activeTab"
+                                        :pane-active="!!activeTab && activeLeftPane === 'live' && (!isMobile || mobilePane === 'terminal')"
+                                        :title="activeTab?.title || ''"
+                                        @live-status="onLiveStatus"
+                                    />
+                                </div>
+                                <div v-show="activeLeftPane === 'terminal'" class="terminal-stack">
+                                    <TerminalPane
+                                        v-for="tab in tabs"
+                                        :key="tab.id"
+                                        :ref="(instance) => setPaneRef(tab.id, instance)"
+                                        :host-id="tab.hostId"
+                                        :active="tab.id === activeTabId && visible"
+                                        @meta="updateTabMeta(tab.id, $event)"
+                                    />
+                                    <div v-if="!tabs.length" class="terminal-empty">
+                                        <p>暂无打开的终端标签。</p>
+                                        <p>在「主机管理」中点击「登录」或「AI 助手」，或拖动上方标签栏排序已打开的连接。</p>
+                                        <button class="primary" @click="openTabFromPicker">前往主机列表</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -2336,9 +2426,6 @@ const appOptions = {
                                 :visible="!!activeTab"
                                 :pane-active="!isMobile || mobilePane === 'ai'"
                                 :title="activeTab?.title || ''"
-                                :left-pane="activeLeftPane"
-                                :live-online="liveOnline"
-                                @update:left-pane="setActiveLeftPane"
                             />
                         </div>
                     </div>

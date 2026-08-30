@@ -129,14 +129,20 @@ final class AiChatController
         try {
             $input = $this->input($request);
             $connId = $this->connId($input);
-            $answers = $this->answers($input);
+            $skip = $this->bool($input['skip'] ?? false);
+            $answers = $skip ? [] : $this->answers($input);
         } catch (ChatException $e) {
             return $this->fail($e->getMessage(), 400, $e->data);
         }
 
         $username = RequestAuth::username($request);
+        $userLabel = $skip ? '已跳过反馈' : '已提交反馈';
 
-        return $this->streamLocked($username, $connId, '已提交反馈', function (callable $emit, ?HttpStreamScope $scope) use ($username, $connId, $answers): array {
+        return $this->streamLocked($username, $connId, $userLabel, function (callable $emit, ?HttpStreamScope $scope) use ($username, $connId, $answers, $skip): array {
+            if ($skip) {
+                return $this->chat->skipFeedback($username, $connId, $emit, $scope);
+            }
+
             return $this->chat->resumeFeedback($username, $connId, $answers, $emit, $scope);
         });
     }

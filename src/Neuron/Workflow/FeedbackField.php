@@ -97,7 +97,7 @@ final class FeedbackField implements JsonSerializable
             return null;
         }
 
-        $required = ! array_key_exists('required', $data) || filter_var($data['required'], FILTER_VALIDATE_BOOL);
+        $required = array_key_exists('required', $data) && filter_var($data['required'], FILTER_VALIDATE_BOOL);
 
         $placeholder = isset($data['placeholder']) && is_string($data['placeholder'])
             ? trim($data['placeholder'])

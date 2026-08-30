@@ -25,14 +25,15 @@ final class AskUserTool extends Tool
             'Ask clarifying questions when the user request is vague. Prefer clickable choices over free text. '
             . 'Use radio for single choice and checkbox for multiple choice. Avoid type=text unless absolutely necessary. '
             . 'Each question needs id, type, label, and options [{value, label}] with 3-6 concrete choices. '
-            . 'Always include an "other" option (value: other, label: 其他) for edge cases. Never use free-text questions. '
-            . 'Set required=false for optional questions. Questions are shown together in the UI.',
+            . 'The UI labels options A, B, C, D…; users may type letter combos like AB in the other text field. '
+            . 'Always include an "other" option (value: other, label: 其他) for edge cases; the UI shows a text box when other is selected. '
+            . 'Set required=true only when an answer is mandatory; otherwise users may skip or submit partial answers.',
             [
                 ToolProperty::make(
                     'message',
                     PropertyType::STRING,
-                    'Context message shown above the questions',
-                    true,
+                    'Context message shown above the questions (optional; UI shows a default if omitted)',
+                    false,
                 ),
                 ArrayProperty::make(
                     'questions',

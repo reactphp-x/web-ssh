@@ -11,6 +11,7 @@ use App\Neuron\Workflow\FeedbackField;
 use App\Neuron\Workflow\FeedbackRequest;
 use NeuronAI\Agent\Events\ToolCallEvent;
 use NeuronAI\Agent\Nodes\ToolNode;
+use NeuronAI\Tools\Tool;
 use NeuronAI\Tools\ToolInterface;
 use NeuronAI\Workflow\Events\Event;
 use NeuronAI\Workflow\Interrupt\WorkflowInterrupt;
@@ -58,6 +59,8 @@ final class UserFeedback implements WorkflowMiddleware
             return;
         }
 
+        $this->normalizeAskUserInputs($event);
+
         $inputs = $tool->getInputs();
         $message = isset($inputs['message']) && is_string($inputs['message'])
             ? trim($inputs['message'])
@@ -65,6 +68,8 @@ final class UserFeedback implements WorkflowMiddleware
         $fields = $this->parseQuestions($inputs['questions'] ?? []);
 
         if ($fields === []) {
+            $this->rejectInvalidAskUser($event);
+
             return;
         }
 
@@ -122,6 +127,37 @@ final class UserFeedback implements WorkflowMiddleware
         }
 
         return $fields;
+    }
+
+    private function normalizeAskUserInputs(ToolCallEvent $event): void
+    {
+        foreach ($event->toolCallMessage->getTools() as $tool) {
+            if ($tool->getName() !== AskUserTool::NAME || ! $tool instanceof Tool) {
+                continue;
+            }
+
+            $inputs = $tool->getInputs();
+            if (! isset($inputs['message']) || ! is_string($inputs['message']) || trim($inputs['message']) === '') {
+                $inputs['message'] = '请回答以下问题';
+            }
+            if (! array_key_exists('questions', $inputs)) {
+                $inputs['questions'] = [];
+            }
+            $tool->setInputs($inputs);
+        }
+    }
+
+    private function rejectInvalidAskUser(ToolCallEvent $event): void
+    {
+        $error = 'ask_user 调用无效：questions 必须是非空数组，每题需包含 id、type、label 和 options（3-6 个选项）。';
+
+        foreach ($event->toolCallMessage->getTools() as $tool) {
+            if ($tool->getName() !== AskUserTool::NAME) {
+                continue;
+            }
+
+            $tool->setCallable(new ToolFeedbackResultHandler($error));
+        }
     }
 
     private function applyAnswers(FeedbackRequest $request, ToolCallEvent $event): void

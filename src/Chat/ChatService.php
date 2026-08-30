@@ -167,6 +167,37 @@ final class ChatService
         return $this->invoke($username, $connId, $userLabel, $request, $emit, $scope);
     }
 
+    /**
+     * @param callable(string, array<string, mixed>): void|null $emit
+     * @return array<string, mixed>
+     */
+    public function skipFeedback(
+        string $username,
+        string $connId,
+        ?callable $emit = null,
+        ?HttpStreamScope $scope = null,
+    ): array {
+        $token = $this->workflowResumeToken($connId);
+        $request = $this->loadFeedbackRequest($token);
+        if ($request === null) {
+            throw new ChatException('没有待回答的问题。');
+        }
+
+        foreach ($request->getFields() as $field) {
+            $request->setFieldValue($field->id, '（已跳过）');
+        }
+
+        $userLabel = '已跳过反馈';
+        if ($emit) {
+            $emit('start', [
+                'thread_key' => $connId,
+                'user_html' => $this->toHtml($userLabel),
+            ]);
+        }
+
+        return $this->invoke($username, $connId, $userLabel, $request, $emit, $scope);
+    }
+
     public function reset(string $connId): string
     {
         $directory = $this->settings->storagePath();
@@ -246,7 +277,7 @@ final class ChatService
 
         if ($resume === null && $this->loadFeedback($connId) !== null) {
             $pending = $this->loadFeedback($connId);
-            throw new ChatException('有待回答的问题，请先填写并提交。', data: [
+            throw new ChatException('有待回答的问题，可先提交、跳过反馈，或填写后提交。', data: [
                 'feedback' => $pending,
                 'thread_key' => $connId,
             ]);
@@ -453,7 +484,7 @@ final class ChatService
      */
     private function feedbackHint(array $feedback): string
     {
-        $lines = ['【待回答 · 请填写以下问题】', ''];
+        $lines = ['【可选反馈 · 填写后提交，或点击跳过】', ''];
         foreach ($feedback['fields'] ?? [] as $field) {
             if (!is_array($field)) {
                 continue;
