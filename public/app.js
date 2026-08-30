@@ -120,12 +120,41 @@ const appOptions = {
 
         const SIDEBAR_KEY = 'web-ssh-sidebar-collapsed';
         const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_KEY) === '1');
+        const isMobile = ref(false);
+        const mobileNavOpen = ref(false);
+
+        onMounted(() => {
+            const mq = window.matchMedia('(max-width: 768px)');
+            const syncMobile = () => {
+                isMobile.value = mq.matches;
+                if (!mq.matches) {
+                    mobileNavOpen.value = false;
+                }
+            };
+            syncMobile();
+            mq.addEventListener('change', syncMobile);
+            onBeforeUnmount(() => mq.removeEventListener('change', syncMobile));
+        });
 
         const toggleSidebar = () => {
+            if (isMobile.value && currentView.value === 'terminal') {
+                mobileNavOpen.value = !mobileNavOpen.value;
+                return;
+            }
             sidebarCollapsed.value = !sidebarCollapsed.value;
             localStorage.setItem(SIDEBAR_KEY, sidebarCollapsed.value ? '1' : '0');
             requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
         };
+
+        const closeMobileNav = () => {
+            mobileNavOpen.value = false;
+        };
+
+        watch(currentView, (view) => {
+            if (view !== 'terminal') {
+                mobileNavOpen.value = false;
+            }
+        });
 
         const logout = async () => {
             if (!confirm('确认退出登录？')) {
@@ -152,6 +181,9 @@ const appOptions = {
             terminalOpenNonce,
             sidebarCollapsed,
             toggleSidebar,
+            isMobile,
+            mobileNavOpen,
+            closeMobileNav,
             isActive: (path) => (location.hash || '#/hosts') === path,
             twoFactorReady,
             twoFactorVerified,
@@ -169,8 +201,8 @@ const appOptions = {
             @complete="onTwoFactorComplete"
             @flash="setFlash"
         />
-        <div v-else-if="twoFactorReady" class="layout" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-            <aside class="sidebar">
+        <div v-else-if="twoFactorReady" class="layout" :class="{ 'sidebar-collapsed': sidebarCollapsed, 'layout-mobile-terminal': isMobile && currentView === 'terminal', 'mobile-nav-open': mobileNavOpen }" @click.self="closeMobileNav">
+            <aside class="sidebar" @click.stop>
                 <button
                     type="button"
                     class="sidebar-toggle"
@@ -189,24 +221,31 @@ const appOptions = {
                     <span class="nav-icon">退</span><span class="nav-label">退出登录</span>
                 </button>
                 <nav class="nav">
-                    <a href="#/hosts" title="主机管理" :class="{ active: currentView === 'hosts' || currentView === 'host-form' }">
+                    <a href="#/hosts" title="主机管理" :class="{ active: currentView === 'hosts' || currentView === 'host-form' }" @click="closeMobileNav">
                         <span class="nav-icon">主</span><span class="nav-label">主机管理</span>
                     </a>
-                    <a href="#/terminal" title="终端" :class="{ active: currentView === 'terminal' }">
+                    <a href="#/terminal" title="终端" :class="{ active: currentView === 'terminal' }" @click="closeMobileNav">
                         <span class="nav-icon">端</span><span class="nav-label">终端</span>
                     </a>
-                    <a href="#/live" title="实时现场" :class="{ active: currentView === 'live' }">
+                    <a href="#/live" title="实时现场" :class="{ active: currentView === 'live' }" @click="closeMobileNav">
                         <span class="nav-icon">场</span><span class="nav-label">实时现场</span>
                     </a>
-                    <a href="#/sessions" title="会话记录" :class="{ active: currentView === 'sessions' }">
+                    <a href="#/sessions" title="会话记录" :class="{ active: currentView === 'sessions' }" @click="closeMobileNav">
                         <span class="nav-icon">话</span><span class="nav-label">会话记录</span>
                     </a>
-                    <a href="#/audit-logs" title="操作日志" :class="{ active: currentView === 'audit' }">
+                    <a href="#/audit-logs" title="操作日志" :class="{ active: currentView === 'audit' }" @click="closeMobileNav">
                         <span class="nav-icon">志</span><span class="nav-label">操作日志</span>
                     </a>
                 </nav>
             </aside>
             <main class="main">
+                <button
+                    v-if="isMobile && currentView === 'terminal'"
+                    type="button"
+                    class="mobile-nav-fab"
+                    :title="mobileNavOpen ? '关闭菜单' : '打开菜单'"
+                    @click="toggleSidebar"
+                >{{ mobileNavOpen ? '×' : '☰' }}</button>
                 <div v-if="flash" class="message" :class="flashType">{{ flash }}</div>
                 <HostListView v-if="currentView === 'hosts'" @flash="setFlash" />
                 <HostFormView v-else-if="currentView === 'host-form'" :host-id="editingHostId" @flash="setFlash" />
@@ -708,6 +747,7 @@ const appOptions = {
                 const hostInfo = ref(null);
                 const connected = ref(false);
                 const connecting = ref(false);
+                const connId = ref('');
                 let term = null;
                 let fitAddon = null;
                 let socket = null;
@@ -823,6 +863,7 @@ const appOptions = {
                         statusMessage: statusMessage.value,
                         connected: connected.value,
                         connecting: connecting.value,
+                        connId: connId.value,
                         elapsed: elapsed.value,
                     });
                 };
@@ -861,6 +902,7 @@ const appOptions = {
                     disconnectReason = '';
                     connectionAttempted = true;
                     elapsed.value = 0;
+                    connId.value = '';
                     await recreateTerminal();
                     statusMessage.value = '正在连接 WebSocket...';
                     pushMeta();
@@ -892,6 +934,7 @@ const appOptions = {
                         try { payload = JSON.parse(event.data); } catch { return; }
                         switch (payload.type) {
                             case 'ready':
+                                connId.value = payload._id || connId.value;
                                 hostInfo.value = payload.host || hostInfo.value;
                                 requestAnimationFrame(() => {
                                     if (!isCurrentGeneration(generation) || socket !== ws) {
@@ -1035,7 +1078,7 @@ const appOptions = {
 
                 watch(() => props.active, fitIfActive);
 
-                expose({ reconnect, disconnect, connecting, connected });
+                expose({ reconnect, disconnect, connecting, connected, connId });
 
                 return {
                     terminalRef,
@@ -1046,6 +1089,811 @@ const appOptions = {
             template: `
                 <div class="terminal-pane" :class="{ active }">
                     <div :key="terminalSessionKey" ref="terminalRef" class="terminal-wrap"></div>
+                </div>
+            `,
+        },
+        LiveSessionPane: {
+            props: {
+                connId: { type: String, default: '' },
+                connected: { type: Boolean, default: false },
+                visible: { type: Boolean, default: true },
+                paneActive: { type: Boolean, default: true },
+                title: { type: String, default: '' },
+                embedded: { type: Boolean, default: false },
+                collapsed: { type: Boolean, default: false },
+            },
+            emits: ['live-status'],
+            setup(props, { emit, expose }) {
+                const termRef = ref(null);
+                const statusText = ref('等待连接');
+                const live = ref(false);
+                let term = null;
+                let source = null;
+                let reconnectTimer = null;
+                let eventBuffer = [];
+                let cols = 80;
+                let rows = 24;
+                let fitAddon = null;
+                let wheelEl = null;
+                let wheelHandler = null;
+
+                const decodeChunkBytes = (encoded) => {
+                    if (!encoded) return null;
+                    try {
+                        const raw = atob(encoded);
+                        const bytes = new Uint8Array(raw.length);
+                        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                        return bytes;
+                    } catch {
+                        return null;
+                    }
+                };
+
+                const attachWheelScroll = (wrapEl) => {
+                    if (wheelEl && wheelHandler) {
+                        wheelEl.removeEventListener('wheel', wheelHandler, { capture: true });
+                    }
+                    wheelEl = wrapEl;
+                    wheelHandler = (e) => {
+                        if (!term?.element) return;
+                        e.preventDefault();
+                        e.stopImmediatePropagation();
+                        const viewport = term.element.querySelector('.xterm-viewport');
+                        if (viewport && viewport.scrollHeight > viewport.clientHeight + 1) {
+                            viewport.scrollTop += e.deltaY;
+                        } else {
+                            wrapEl.scrollTop += e.deltaY;
+                        }
+                    };
+                    wrapEl.addEventListener('wheel', wheelHandler, { passive: false, capture: true });
+                };
+
+                const destroyTerm = () => {
+                    if (wheelEl && wheelHandler) {
+                        wheelEl.removeEventListener('wheel', wheelHandler, { capture: true });
+                    }
+                    wheelEl = null;
+                    wheelHandler = null;
+                    if (term) {
+                        term.dispose();
+                        term = null;
+                    }
+                };
+
+                const ensureTerm = () => {
+                    if (!termRef.value || term) return;
+                    term = new Terminal({
+                        cols,
+                        rows,
+                        disableStdin: true,
+                        cursorBlink: false,
+                        cursorInactiveStyle: 'none',
+                        fontSize: 12,
+                        scrollback: 5000,
+                        theme: {
+                            background: '#0f111a',
+                            foreground: '#e6e6e6',
+                            cursor: '#f8f8f2',
+                            brightBlack: '#6b7280',
+                        },
+                    });
+                    if (typeof FitAddon !== 'undefined' && FitAddon.FitAddon) {
+                        fitAddon = new FitAddon.FitAddon();
+                        term.loadAddon(fitAddon);
+                    }
+                    term.open(termRef.value);
+                    fitLiveTerm();
+                    attachWheelScroll(termRef.value);
+                    for (const [kind, data] of eventBuffer) {
+                        handleEvent(kind, data);
+                    }
+                    eventBuffer = [];
+                    term.scrollToBottom();
+                };
+
+                const fitLiveTerm = () => {
+                    if (!term || !fitAddon || !termRef.value) return;
+                    requestAnimationFrame(() => {
+                        try {
+                            fitAddon.fit();
+                        } catch {
+                            // ignore fit while hidden
+                        }
+                    });
+                };
+
+                const writeStatus = (text) => {
+                    if (!term || !text) return;
+                    term.writeln('\r\n\x1b[90m' + text + '\x1b[0m');
+                };
+
+                const handleEvent = (kind, data) => {
+                    if (kind === 'status' && data && data.replay) return;
+                    if (!term) {
+                        eventBuffer.push([kind, data]);
+                        return;
+                    }
+                    if (kind === 'output') {
+                        const bytes = decodeChunkBytes(data?.chunk || '');
+                        if (bytes) {
+                            term.write(bytes);
+                            term.scrollToBottom();
+                        }
+                        return;
+                    }
+                    if (kind === 'resize') {
+                        cols = Math.max(1, data?.cols || cols);
+                        rows = Math.max(1, data?.rows || rows);
+                        term.resize(cols, rows);
+                        return;
+                    }
+                    if (kind === 'error') {
+                        live.value = false;
+                        statusText.value = 'error';
+                        writeStatus('[error] ' + (data?.message || '连接失败'));
+                    }
+                    if (kind === 'disconnected') {
+                        live.value = false;
+                        statusText.value = '已结束';
+                        writeStatus('[disconnected] ' + (data?.message || 'SSH 会话已结束'));
+                    }
+                };
+
+                const closeStream = () => {
+                    if (reconnectTimer) {
+                        clearTimeout(reconnectTimer);
+                        reconnectTimer = null;
+                    }
+                    if (source) {
+                        source.close();
+                        source = null;
+                    }
+                };
+
+                const openStream = () => {
+                    if (!props.connId || !props.connected) return;
+                    closeStream();
+                    eventBuffer = [];
+                    term?.clear();
+                    live.value = true;
+                    statusText.value = 'live';
+
+                    source = new EventSource('/api/live/sessions/' + encodeURIComponent(props.connId) + '/stream');
+                    const events = ['start', 'connected', 'resize', 'output', 'error', 'disconnected', 'status'];
+                    for (const name of events) {
+                        source.addEventListener(name, (event) => {
+                            let data = event.data;
+                            try { data = JSON.parse(event.data); } catch { /* keep raw */ }
+                            handleEvent(name, data);
+                        });
+                    }
+                    source.onerror = () => {
+                        closeStream();
+                        if (!props.connected || !props.connId) return;
+                        if (reconnectTimer) return;
+                        reconnectTimer = setTimeout(() => {
+                            reconnectTimer = null;
+                            if (props.connected && props.connId) {
+                                openStream();
+                            }
+                        }, 1200);
+                    };
+                };
+
+                const syncStream = () => {
+                    if (!props.visible || !props.connId || !props.connected) {
+                        closeStream();
+                        live.value = false;
+                        statusText.value = props.connId ? '未连接' : '等待连接';
+                        return;
+                    }
+                    nextTick(() => {
+                        ensureTerm();
+                        openStream();
+                    });
+                };
+
+                watch(() => [props.connId, props.connected, props.visible], syncStream, { immediate: true });
+                watch(() => props.paneActive, (active) => {
+                    if (active) {
+                        nextTick(() => {
+                            ensureTerm();
+                            fitLiveTerm();
+                        });
+                    }
+                });
+                watch(() => props.collapsed, (collapsed) => {
+                    if (!collapsed) {
+                        nextTick(() => {
+                            ensureTerm();
+                            fitLiveTerm();
+                        });
+                    }
+                });
+                watch([live, statusText], () => {
+                    emit('live-status', { live: live.value, statusText: statusText.value });
+                }, { immediate: true });
+
+                expose({ live, statusText });
+
+                onBeforeUnmount(() => {
+                    closeStream();
+                    destroyTerm();
+                });
+
+                return { termRef, statusText, live, title: computed(() => props.title) };
+            },
+            template: `
+                <div
+                    class="terminal-live-pane"
+                    v-show="visible"
+                    :class="{
+                        'pane-mobile-active': paneActive,
+                        embedded,
+                        collapsed,
+                    }"
+                >
+                    <div v-if="!embedded" class="terminal-live-header">
+                        <strong>实时现场</strong>
+                        <span class="live-lamp terminal-live-lamp" :class="{ live }"><i></i>{{ statusText }}</span>
+                    </div>
+                    <div v-if="embedded && !collapsed" class="terminal-live-header terminal-live-header-embedded">
+                        <strong>实时现场</strong>
+                        <span class="live-lamp terminal-live-lamp" :class="{ live }"><i></i>{{ statusText }}</span>
+                    </div>
+                    <div v-if="!connected && !collapsed" class="ai-chat-hint">SSH 连接成功后显示终端输出</div>
+                    <div v-show="connected && !collapsed" ref="termRef" class="terminal-live-term"></div>
+                </div>
+            `,
+        },
+        AiChatPanel: {
+            props: {
+                connId: { type: String, default: '' },
+                connected: { type: Boolean, default: false },
+                visible: { type: Boolean, default: true },
+                paneActive: { type: Boolean, default: true },
+                title: { type: String, default: '' },
+            },
+            setup(props) {
+                const liveExpanded = ref(false);
+                const liveOnline = ref(false);
+                const liveStatusText = ref('等待连接');
+
+                const onLiveStatus = ({ live, statusText }) => {
+                    liveOnline.value = !!live;
+                    liveStatusText.value = statusText || '等待连接';
+                };
+
+                const toggleLive = () => {
+                    liveExpanded.value = !liveExpanded.value;
+                    if (liveExpanded.value) {
+                        requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+                    }
+                };
+
+                const toolCallsOpen = ref(false);
+                const toolCalls = ref([]);
+
+                const normalizeToolCalls = (items) => (items || []).map((item, idx) => ({
+                    key: item.callId || `${item.name || 'tool'}-${idx}`,
+                    callId: item.callId || null,
+                    name: item.name || '',
+                    label: item.label || item.name || 'tool',
+                    inputs: item.inputs || {},
+                    result: item.result ?? null,
+                    status: item.status || (item.result != null && item.result !== '' ? 'done' : 'running'),
+                }));
+
+                const recordToolEvent = (data) => {
+                    if (!data) return;
+                    const callId = data.callId || null;
+                    if (data.phase === 'call') {
+                        toolCalls.value.push({
+                            key: callId || `tmp-${Date.now()}-${toolCalls.value.length}`,
+                            callId,
+                            name: data.name || '',
+                            label: data.label || data.name || 'tool',
+                            inputs: data.inputs || {},
+                            result: null,
+                            status: 'running',
+                        });
+                        return;
+                    }
+                    if (data.phase !== 'result') return;
+
+                    let target = null;
+                    if (callId) {
+                        target = [...toolCalls.value].reverse().find((item) => item.callId === callId) || null;
+                    }
+                    if (!target) {
+                        target = [...toolCalls.value].reverse().find((item) => item.name === data.name && item.status === 'running') || null;
+                    }
+                    if (target) {
+                        if (data.inputs && Object.keys(data.inputs).length) {
+                            target.inputs = data.inputs;
+                        }
+                        target.result = data.result ?? null;
+                        target.status = 'done';
+                        return;
+                    }
+                    toolCalls.value.push({
+                        key: callId || `tmp-${Date.now()}-${toolCalls.value.length}`,
+                        callId,
+                        name: data.name || '',
+                        label: data.label || data.name || 'tool',
+                        inputs: data.inputs || {},
+                        result: data.result ?? null,
+                        status: 'done',
+                    });
+                };
+
+                const formatToolJson = (value) => {
+                    if (value == null || value === '') return '';
+                    if (typeof value === 'string') {
+                        try {
+                            return JSON.stringify(JSON.parse(value), null, 2);
+                        } catch {
+                            return value;
+                        }
+                    }
+                    try {
+                        return JSON.stringify(value, null, 2);
+                    } catch {
+                        return String(value);
+                    }
+                };
+
+                const openToolCalls = () => {
+                    toolCallsOpen.value = true;
+                };
+
+                const closeToolCalls = () => {
+                    toolCallsOpen.value = false;
+                };
+
+                let toolCallsEscapeHandler = null;
+                watch(toolCallsOpen, (open) => {
+                    if (toolCallsEscapeHandler) {
+                        window.removeEventListener('keydown', toolCallsEscapeHandler);
+                        toolCallsEscapeHandler = null;
+                    }
+                    if (!open) return;
+                    toolCallsEscapeHandler = (event) => {
+                        if (event.key === 'Escape') {
+                            closeToolCalls();
+                        }
+                    };
+                    window.addEventListener('keydown', toolCallsEscapeHandler);
+                });
+
+                onBeforeUnmount(() => {
+                    if (toolCallsEscapeHandler) {
+                        window.removeEventListener('keydown', toolCallsEscapeHandler);
+                    }
+                });
+
+                const messages = ref([]);
+                const draft = ref('');
+                const busy = ref(false);
+                const busyText = ref('');
+                const configured = ref(false);
+                const enabled = ref(true);
+                const approval = ref(null);
+                const feedback = ref(null);
+                const feedbackAnswers = ref({});
+                const errorText = ref('');
+                const logRef = ref(null);
+                const chatBodyRef = ref(null);
+                const composing = ref(false);
+                let abortController = null;
+
+                const scrollToBottom = async () => {
+                    await nextTick();
+                    const el = chatBodyRef.value || logRef.value;
+                    if (el) {
+                        el.scrollTop = el.scrollHeight;
+                    }
+                };
+
+                const consumeSse = async (response, onEvent) => {
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const chunks = buffer.split('\n\n');
+                        buffer = chunks.pop() || '';
+                        for (const chunk of chunks) {
+                            const lines = chunk.split('\n');
+                            let event = 'message';
+                            let data = '';
+                            for (const line of lines) {
+                                if (line.startsWith('event: ')) event = line.slice(7);
+                                if (line.startsWith('data: ')) data = line.slice(6);
+                            }
+                            if (data) onEvent(event, JSON.parse(data));
+                        }
+                    }
+                };
+
+                const postJson = async (url, body) => {
+                    return fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Accept: 'application/json, text/event-stream',
+                        },
+                        credentials: 'same-origin',
+                        body: JSON.stringify(body),
+                    });
+                };
+
+                const bootstrap = async () => {
+                    if (!props.connId) return;
+                    try {
+                        const res = await fetch('/api/ai/bootstrap?conn_id=' + encodeURIComponent(props.connId), {
+                            credentials: 'same-origin',
+                        });
+                        const json = await res.json();
+                        if (json.code !== 0) {
+                            errorText.value = json.msg || 'AI 初始化失败';
+                            return;
+                        }
+                        configured.value = !!json.data?.configured;
+                        enabled.value = json.data?.enabled !== false;
+                        messages.value = (json.data?.messages || []).map((m) => ({
+                            role: m.role,
+                            html: m.html || m.content,
+                            content: m.content,
+                        }));
+                        toolCalls.value = normalizeToolCalls(json.data?.tool_calls);
+                        approval.value = json.data?.approval || null;
+                        feedback.value = json.data?.feedback || null;
+                        feedbackAnswers.value = {};
+                        errorText.value = '';
+                        await scrollToBottom();
+                    } catch (e) {
+                        errorText.value = e.message || 'AI 初始化失败';
+                    }
+                };
+
+                const appendAssistantDelta = (text) => {
+                    const last = messages.value[messages.value.length - 1];
+                    if (last && last.role === 'assistant' && last.streaming) {
+                        last.content += text;
+                        last.html = (last.html || '') + text.replace(/\n/g, '<br>');
+                        return;
+                    }
+                    messages.value.push({ role: 'assistant', content: text, html: text.replace(/\n/g, '<br>'), streaming: true });
+                };
+
+                const finalizeAssistant = (payload) => {
+                    const last = messages.value[messages.value.length - 1];
+                    if (last && last.role === 'assistant' && last.streaming) {
+                        last.streaming = false;
+                        if (payload?.html) last.html = payload.html;
+                        if (payload?.content) last.content = payload.content;
+                    } else if (payload?.content) {
+                        messages.value.push({
+                            role: 'assistant',
+                            content: payload.content,
+                            html: payload.html || payload.content.replace(/\n/g, '<br>'),
+                            streaming: false,
+                        });
+                    }
+                    if (payload?.approval && (payload.approval.actions?.length ?? 0) > 0) {
+                        approval.value = payload.approval;
+                    } else if (!payload?.approval) {
+                        approval.value = null;
+                    }
+                    if (payload?.feedback && (payload.feedback.fields?.length ?? 0) > 0) {
+                        feedback.value = payload.feedback;
+                    } else if (!payload?.feedback) {
+                        feedback.value = null;
+                    }
+                };
+
+                const runStream = async (url, body) => {
+                    abortController?.abort();
+                    abortController = new AbortController();
+                    busy.value = true;
+                    busyText.value = 'AI 思考中...';
+                    errorText.value = '';
+                    try {
+                        const response = await fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                Accept: 'text/event-stream',
+                            },
+                            credentials: 'same-origin',
+                            body: JSON.stringify(body),
+                            signal: abortController.signal,
+                        });
+                        const contentType = response.headers.get('content-type') || '';
+                        if (!contentType.includes('text/event-stream')) {
+                            const json = await response.json();
+                            if (json.code !== 0) throw new Error(json.msg || '请求失败');
+                            finalizeAssistant(json.data || {});
+                            return;
+                        }
+                        await consumeSse(response, (event, data) => {
+                            if (event === 'delta') appendAssistantDelta(data.text || '');
+                            if (event === 'tool') {
+                                recordToolEvent(data);
+                                busyText.value = '工具: ' + (data.label || data.name || '') + ' (' + (data.phase === 'call' ? '调用' : '完成') + ')';
+                            }
+                            if (event === 'approval') {
+                                approval.value = data;
+                                scrollToBottom();
+                            }
+                            if (event === 'feedback') {
+                                feedback.value = data;
+                                feedbackAnswers.value = {};
+                                scrollToBottom();
+                            }
+                            if (event === 'done') finalizeAssistant(data);
+                            if (event === 'error') errorText.value = data.message || 'AI 错误';
+                        });
+                    } catch (e) {
+                        if (e.name !== 'AbortError') {
+                            errorText.value = e.message || 'AI 请求失败';
+                        }
+                    } finally {
+                        busy.value = false;
+                        busyText.value = '';
+                        const last = messages.value[messages.value.length - 1];
+                        if (last?.streaming) last.streaming = false;
+                        await scrollToBottom();
+                    }
+                };
+
+                const sendMessage = async () => {
+                    const text = draft.value.trim();
+                    if (!text || busy.value || !props.connId || !props.connected) return;
+                    messages.value.push({ role: 'user', content: text, html: text.replace(/\n/g, '<br>') });
+                    draft.value = '';
+                    await scrollToBottom();
+                    await runStream('/api/ai/chat/stream', { conn_id: props.connId, message: text });
+                };
+
+                const submitApproval = async (approved) => {
+                    if (!props.connId || busy.value) return;
+                    messages.value.push({ role: 'user', content: approved ? '批准' : '拒绝', html: approved ? '批准' : '拒绝' });
+                    approval.value = null;
+                    await scrollToBottom();
+                    await runStream('/api/ai/chat/approval/stream', {
+                        conn_id: props.connId,
+                        approved: approved ? 1 : 0,
+                    });
+                };
+
+                const submitFeedback = async () => {
+                    if (!props.connId || busy.value || !feedback.value) return;
+                    messages.value.push({ role: 'user', content: '已提交反馈', html: '已提交反馈' });
+                    const answers = { ...feedbackAnswers.value };
+                    feedback.value = null;
+                    feedbackAnswers.value = {};
+                    await scrollToBottom();
+                    await runStream('/api/ai/chat/feedback/stream', {
+                        conn_id: props.connId,
+                        answers,
+                    });
+                };
+
+                const stopGeneration = async () => {
+                    abortController?.abort();
+                    if (!props.connId) return;
+                    await postJson('/api/ai/chat/stop', { conn_id: props.connId });
+                    await bootstrap();
+                };
+
+                const resetChat = async () => {
+                    if (!props.connId || busy.value) return;
+                    await postJson('/api/ai/chat/reset', { conn_id: props.connId });
+                    messages.value = [];
+                    toolCallsOpen.value = false;
+                    approval.value = null;
+                    feedback.value = null;
+                    feedbackAnswers.value = {};
+                    await bootstrap();
+                };
+
+                const onComposerKeydown = (event) => {
+                    if (event.key !== 'Enter' || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) {
+                        return;
+                    }
+                    if (composing.value || event.isComposing || event.keyCode === 229) {
+                        return;
+                    }
+                    event.preventDefault();
+                    sendMessage();
+                };
+
+                watch(() => props.connId, () => {
+                    messages.value = [];
+                    toolCalls.value = [];
+                    toolCallsOpen.value = false;
+                    approval.value = null;
+                    feedback.value = null;
+                    bootstrap();
+                }, { immediate: true });
+
+                watch(() => props.paneActive, (active) => {
+                    if (active) {
+                        scrollToBottom();
+                    }
+                });
+
+                return {
+                    liveExpanded,
+                    liveOnline,
+                    liveStatusText,
+                    toggleLive,
+                    onLiveStatus,
+                    toolCallsOpen,
+                    toolCalls,
+                    openToolCalls,
+                    closeToolCalls,
+                    formatToolJson,
+                    messages,
+                    draft,
+                    busy,
+                    busyText,
+                    configured,
+                    enabled,
+                    approval,
+                    feedback,
+                    feedbackAnswers,
+                    errorText,
+                    logRef,
+                    chatBodyRef,
+                    composing,
+                    sendMessage,
+                    onComposerKeydown,
+                    submitApproval,
+                    submitFeedback,
+                    stopGeneration,
+                    resetChat,
+                };
+            },
+            template: `
+                <div class="ai-chat-panel" v-show="visible" :class="{ 'pane-mobile-active': paneActive }">
+                    <div class="ai-chat-header">
+                        <div class="ai-chat-title">
+                            <strong>AI 助手</strong>
+                            <button
+                                type="button"
+                                class="ai-live-toggle"
+                                :class="{ active: toolCallsOpen }"
+                                title="查看工具调用"
+                                @click="openToolCalls"
+                            >
+                                工具调用
+                                <span v-if="toolCalls.length" class="ai-tool-count">{{ toolCalls.length }}</span>
+                            </button>
+                            <button
+                                type="button"
+                                class="ai-live-toggle"
+                                :class="{ active: liveExpanded }"
+                                :title="liveExpanded ? '收起实时现场' : '展开实时现场'"
+                                @click="toggleLive"
+                            >
+                                <span class="live-lamp terminal-live-lamp" :class="{ live: liveOnline }"><i></i></span>
+                                实时现场
+                                <span class="ai-live-chevron">{{ liveExpanded ? '▾' : '▸' }}</span>
+                            </button>
+                        </div>
+                        <div class="actions">
+                            <button type="button" @click="stopGeneration" :disabled="!busy">停止</button>
+                            <button type="button" @click="resetChat" :disabled="busy">重置</button>
+                        </div>
+                    </div>
+                    <Teleport to="body">
+                        <div v-if="toolCallsOpen" class="ai-tool-popup-overlay" @click.self="closeToolCalls">
+                            <div class="ai-tool-popup" role="dialog" aria-modal="true" aria-labelledby="ai-tool-popup-title">
+                                <div class="ai-tool-popup-head">
+                                    <h3 id="ai-tool-popup-title">工具调用</h3>
+                                    <button type="button" class="ai-tool-popup-close" title="关闭" @click="closeToolCalls">×</button>
+                                </div>
+                                <div class="ai-tool-popup-body">
+                                    <div v-if="!toolCalls.length" class="ai-chat-hint">暂无工具调用</div>
+                                    <div v-for="item in toolCalls" :key="item.key" class="ai-tool-call-item">
+                                        <div class="ai-tool-call-head">
+                                            <strong>{{ item.label }}</strong>
+                                            <span class="ai-tool-call-status" :class="item.status">{{ item.status === 'running' ? '执行中' : '已完成' }}</span>
+                                        </div>
+                                        <div v-if="Object.keys(item.inputs || {}).length" class="ai-tool-call-block">
+                                            <div class="ai-tool-call-label">参数</div>
+                                            <pre>{{ formatToolJson(item.inputs) }}</pre>
+                                        </div>
+                                        <div v-if="item.result != null && item.result !== ''" class="ai-tool-call-block">
+                                            <div class="ai-tool-call-label">结果</div>
+                                            <pre>{{ formatToolJson(item.result) }}</pre>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </Teleport>
+                    <LiveSessionPane
+                        embedded
+                        :collapsed="!liveExpanded"
+                        :conn-id="connId"
+                        :connected="connected"
+                        :visible="visible"
+                        :pane-active="paneActive && liveExpanded"
+                        :title="title"
+                        @live-status="onLiveStatus"
+                    />
+                    <div v-if="!connected" class="ai-chat-hint">SSH 连接成功后可用</div>
+                    <div v-else-if="!enabled" class="ai-chat-hint">AI 助手未启用</div>
+                    <div v-else-if="!configured" class="ai-chat-hint">请在 .env 配置 NEURON_AI_KEY</div>
+                    <div class="ai-chat-body" ref="chatBodyRef">
+                        <div ref="logRef" class="ai-chat-log">
+                            <div v-if="!messages.length" class="ai-chat-empty">描述你想完成的任务，AI 会提议命令，你审核后执行。</div>
+                            <div v-for="(msg, idx) in messages" :key="idx" class="ai-msg" :class="msg.role">
+                                <div class="ai-bubble" :class="{ streaming: msg.streaming }" v-html="msg.html"></div>
+                            </div>
+                            <div v-if="busyText" class="ai-busy">{{ busyText }}</div>
+                            <div v-if="errorText" class="ai-error">{{ errorText }}</div>
+                        </div>
+                    </div>
+                    <div class="ai-chat-footer">
+                        <div v-if="approval" class="ai-approval">
+                            <h4>待审核命令</h4>
+                            <pre>{{ approval.actions?.map(a => a.detail || a.description).join('\\n\\n') }}</pre>
+                            <div class="actions">
+                                <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
+                                <button type="button" @click="submitApproval(false)" :disabled="busy">拒绝</button>
+                            </div>
+                        </div>
+                        <div v-if="feedback" class="ai-feedback">
+                            <h4>{{ feedback.message || '请回答' }}</h4>
+                            <div v-for="field in feedback.fields || []" :key="field.id" class="ai-field">
+                                <label>{{ field.label }}</label>
+                                <div v-if="field.type === 'radio' || field.type === 'select'" class="ai-options">
+                                    <label v-for="opt in field.options || []" :key="opt.value" class="ai-option">
+                                        <input type="radio" :name="'fb-' + field.id" :value="opt.value" v-model="feedbackAnswers[field.id]">
+                                        {{ opt.label }}
+                                    </label>
+                                </div>
+                                <div v-else-if="field.type === 'checkbox'" class="ai-options">
+                                    <label v-for="opt in field.options || []" :key="opt.value" class="ai-option">
+                                        <input type="checkbox" :value="opt.value" @change="(e) => {
+                                            const cur = feedbackAnswers[field.id] || [];
+                                            feedbackAnswers[field.id] = e.target.checked
+                                                ? [...cur, opt.value]
+                                                : cur.filter(v => v !== opt.value);
+                                        }">
+                                        {{ opt.label }}
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="actions">
+                                <button class="primary" type="button" @click="submitFeedback" :disabled="busy">提交</button>
+                            </div>
+                        </div>
+                        <div class="ai-composer">
+                            <textarea
+                                v-model="draft"
+                                rows="2"
+                                placeholder="描述任务，例如：查看磁盘使用情况并清理临时文件"
+                                enterkeyhint="send"
+                                autocapitalize="sentences"
+                                autocomplete="off"
+                                @compositionstart="composing = true"
+                                @compositionend="composing = false"
+                                @keydown="onComposerKeydown"
+                                :disabled="busy || !connected || !configured"
+                            ></textarea>
+                            <div class="ai-composer-actions">
+                                <button class="primary ai-send-btn" type="button" @click="sendMessage" :disabled="busy || !draft.trim() || !connected || !configured">发送</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             `,
         },
@@ -1098,6 +1946,7 @@ const appOptions = {
                         statusMessage: '准备连接...',
                         connected: false,
                         connecting: true,
+                        connId: '',
                         elapsed: 0,
                     };
                     tabs.value.push(tab);
@@ -1116,6 +1965,26 @@ const appOptions = {
                 const activePane = computed(() => {
                     if (!activeTabId.value) return null;
                     return paneRefs.value[activeTabId.value] || null;
+                });
+
+                const activeConnId = computed(() => activeTab.value?.connId || '');
+                const activeConnected = computed(() => !!activeTab.value?.connected);
+                const mobilePane = ref('terminal');
+                const isMobile = ref(false);
+
+                const setMobilePane = (pane) => {
+                    mobilePane.value = pane;
+                    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+                };
+
+                onMounted(() => {
+                    const mq = window.matchMedia('(max-width: 768px)');
+                    const syncMobile = () => {
+                        isMobile.value = mq.matches;
+                    };
+                    syncMobile();
+                    mq.addEventListener('change', syncMobile);
+                    onBeforeUnmount(() => mq.removeEventListener('change', syncMobile));
                 });
 
                 const reconnectActive = () => activePane.value?.reconnect?.();
@@ -1194,6 +2063,11 @@ const appOptions = {
                     formatElapsed,
                     navigate,
                     visible: computed(() => props.visible),
+                    activeConnId,
+                    activeConnected,
+                    mobilePane,
+                    isMobile,
+                    setMobilePane,
                 };
             },
             template: `
@@ -1239,19 +2113,50 @@ const appOptions = {
                         </div>
                     </div>
 
-                    <div class="terminal-stack">
-                        <TerminalPane
-                            v-for="tab in tabs"
-                            :key="tab.id"
-                            :ref="(instance) => setPaneRef(tab.id, instance)"
-                            :host-id="tab.hostId"
-                            :active="tab.id === activeTabId && visible"
-                            @meta="updateTabMeta(tab.id, $event)"
-                        />
-                        <div v-if="!tabs.length" class="terminal-empty">
-                            <p>暂无打开的终端标签。</p>
-                            <p>在「主机管理」中点击「登录」，或拖动上方标签栏排序已打开的连接。</p>
-                            <button class="primary" @click="openTabFromPicker">前往主机列表</button>
+                    <div v-if="isMobile && activeTab" class="terminal-mobile-tabs" role="tablist" aria-label="终端视图切换">
+                        <button
+                            type="button"
+                            role="tab"
+                            :aria-selected="mobilePane === 'terminal'"
+                            :class="{ active: mobilePane === 'terminal' }"
+                            @click="setMobilePane('terminal')"
+                        >终端</button>
+                        <button
+                            type="button"
+                            role="tab"
+                            :aria-selected="mobilePane === 'ai'"
+                            :class="{ active: mobilePane === 'ai' }"
+                            @click="setMobilePane('ai')"
+                        >AI 助手</button>
+                    </div>
+
+                    <div class="terminal-body" :class="{ 'is-mobile': isMobile }">
+                        <div
+                            class="terminal-stack"
+                            :class="{ 'pane-mobile-active': !isMobile || mobilePane === 'terminal' }"
+                        >
+                            <TerminalPane
+                                v-for="tab in tabs"
+                                :key="tab.id"
+                                :ref="(instance) => setPaneRef(tab.id, instance)"
+                                :host-id="tab.hostId"
+                                :active="tab.id === activeTabId && visible"
+                                @meta="updateTabMeta(tab.id, $event)"
+                            />
+                            <div v-if="!tabs.length" class="terminal-empty">
+                                <p>暂无打开的终端标签。</p>
+                                <p>在「主机管理」中点击「登录」，或拖动上方标签栏排序已打开的连接。</p>
+                                <button class="primary" @click="openTabFromPicker">前往主机列表</button>
+                            </div>
+                        </div>
+                        <div class="terminal-sidebar" :class="{ 'is-mobile': isMobile }">
+                            <AiChatPanel
+                                :conn-id="activeConnId"
+                                :connected="activeConnected"
+                                :visible="!!activeTab"
+                                :pane-active="!isMobile || mobilePane === 'ai'"
+                                :title="activeTab?.title || ''"
+                            />
                         </div>
                     </div>
                 </div>
@@ -2351,5 +3256,12 @@ const appOptions = {
         },
     },
 };
-appOptions.components.TerminalWorkspace.components = { TerminalPane: appOptions.components.TerminalPane };
+appOptions.components.TerminalWorkspace.components = {
+    TerminalPane: appOptions.components.TerminalPane,
+    LiveSessionPane: appOptions.components.LiveSessionPane,
+    AiChatPanel: appOptions.components.AiChatPanel,
+};
+appOptions.components.AiChatPanel.components = {
+    LiveSessionPane: appOptions.components.LiveSessionPane,
+};
 createApp(appOptions).mount('#app');

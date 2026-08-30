@@ -10,3 +10,4 @@
 /storage/*.sqlite-wal
 /storage/*.sqlite-shm
 /storage/recordings/
+/storage/neuron/

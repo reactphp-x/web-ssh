@@ -29,6 +29,14 @@ use App\Service\HostService;
 use App\Service\SessionService;
 use App\Service\SshProbeService;
 use App\Service\TwoFactorService;
+use App\Chat\ChatService;
+use App\Chat\ChatSettings;
+use App\Chat\ChatStreamSession;
+use App\Chat\StreamChunkMapper;
+use App\Chat\ThreadLock;
+use App\Middleware\FiberHandler;
+use App\Neuron\HttpClient\ReactHttpClient;
+use App\Ssh\SshSessionBridge;
 use App\Ssh\Ssh2Client;
 use App\Ssh\SshLiveRegistry;
 use App\Ssh\SshTerminalGateway;
@@ -42,6 +50,7 @@ use ReactphpX\Framework\Environment;
 use ReactphpX\WebsocketGroup\WebsocketGroupComponent;
 use ReactphpX\WebsocketGroup\WebsocketGroupMiddleware;
 use ReactphpX\WebsocketMiddleware\WebsocketMiddleware;
+use ReactphpX\Redis\Pool as RedisPool;
 
 final class WebAppFactory
 {
@@ -83,6 +92,7 @@ final class WebAppFactory
         $recordingConfig = SessionRecordingConfig::load($env);
         $sessionRecorder = new SessionRecorder($recordingConfig, $sessions);
         $liveRegistry = new SshLiveRegistry();
+        $sessionBridge = new SshSessionBridge($liveRegistry, $sessionRecorder);
         $basicAuth = BasicAuthConfig::load($env, $loginRateLimiter)->handler();
         $twoFactorEnabled = $basicAuth !== null;
         $twoFactorService = $twoFactorEnabled
@@ -111,8 +121,35 @@ final class WebAppFactory
         $live = new LiveController($liveRegistry);
         $recording = new RecordingController($sessions, $sessionRecorder);
 
-        $gateway = new SshTerminalGateway($connectionGroup, $hostService, $sessionService, $liveRegistry, $sessionRecorder);
+        $gateway = new SshTerminalGateway($connectionGroup, $hostService, $sessionService, $liveRegistry, $sessionRecorder, $sessionBridge);
         $gateway->register();
+
+        $logManager = configureLogging($env);
+        $logger = $logManager->channel();
+
+        $redisPool = self::redisPool($env);
+        $chatSettings = new ChatSettings($env);
+        $chatStreamSession = new ChatStreamSession($redisPool);
+        $chatService = new ChatService(
+            $chatSettings,
+            $sessionBridge,
+            new ReactHttpClient(timeout: $chatSettings->httpTimeout()),
+            new StreamChunkMapper(),
+            $chatStreamSession,
+            $logger,
+        );
+        $aiChat = new AiChatController(
+            $chatService,
+            $chatSettings,
+            new ThreadLock($redisPool),
+            $chatStreamSession,
+            $sessionBridge,
+            $audit,
+            $logger,
+        );
+
+        $accessLog = $env->nullableString('HTTP_ACCESS_LOG')
+            ?? $env->basePath() . '/storage/logs/access.log';
 
         $wsMiddleware = new WebsocketGroupMiddleware($connectionGroup);
         $tokens = self::parseTokens($env->nullableString('WS_RPC_TOKENS'));
@@ -120,15 +157,10 @@ final class WebAppFactory
             $wsMiddleware->setTokens($tokens);
         }
 
-        $logManager = configureLogging($env);
-        $logger = $logManager->channel();
-
-        $accessLog = $env->nullableString('HTTP_ACCESS_LOG')
-            ?? $env->basePath() . '/storage/logs/access.log';
-
         $middleware = [
             new AccessLogHandler($accessLog),
             new JsonErrorHandler($env, $logger),
+            new FiberHandler(),
         ];
 
         if ($basicAuth !== null) {
@@ -178,6 +210,13 @@ final class WebAppFactory
         $app->get('/api/live/sessions', static fn (ServerRequestInterface $request) => $live->listSessions($request));
         $app->get('/api/live/sessions/{id:[a-f0-9]+}/stream', static fn (ServerRequestInterface $request) => $live->streamSession($request));
 
+        $app->get('/api/ai/bootstrap', static fn (ServerRequestInterface $request) => $aiChat->bootstrap($request));
+        $app->post('/api/ai/chat/stream', static fn (ServerRequestInterface $request) => $aiChat->stream($request));
+        $app->post('/api/ai/chat/approval/stream', static fn (ServerRequestInterface $request) => $aiChat->approvalStream($request));
+        $app->post('/api/ai/chat/feedback/stream', static fn (ServerRequestInterface $request) => $aiChat->feedbackStream($request));
+        $app->post('/api/ai/chat/stop', static fn (ServerRequestInterface $request) => $aiChat->stop($request));
+        $app->post('/api/ai/chat/reset', static fn (ServerRequestInterface $request) => $aiChat->reset($request));
+
         $app->get(
             '/ws',
             $wsMiddleware,
@@ -202,5 +241,19 @@ final class WebAppFactory
     private static function routeInt(ServerRequestInterface $request, string $name): int
     {
         return (int) $request->getAttribute($name);
+    }
+
+    private static function redisPool(Environment $env): ?RedisPool
+    {
+        $url = trim($env->nullableString('REDIS_URL') ?? '');
+        if ($url === '') {
+            return null;
+        }
+
+        try {
+            return new RedisPool(uri: $url);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }

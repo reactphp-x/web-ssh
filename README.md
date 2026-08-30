@@ -123,9 +123,11 @@ docker compose up --build
 1. 打开 `/login`，输入平台账号密码
 2. 首次使用需绑定 TOTP（扫码）；之后每次登录输入 6 位验证码
 3. 在 **主机管理** 中新建/编辑主机（地址、端口、用户名、密码或私钥、可选跳板机）
-4. 进入 **终端**，选择主机建立 SSH 会话；可在 shell 中运行 `claude`、`cursor agent` 等 TUI 程序
+4. 进入 **终端**，选择主机建立 SSH 会话；右侧 **AI 助手** 可描述任务，AI 提议命令后需你审核才会发送到终端
 5. **实时现场** 可观看当前进行中的连接；**会话记录** / **操作日志** 查看历史
 6. 在 **会话记录** 中，若该次连接有录像，点击 **回放** 可在浏览器内播放 asciinema 终端录像
+
+也可在 shell 中手动运行 `claude`、`cursor agent` 等 TUI 程序。
 
 未登录访问 `/` 会重定向到 `/login`；点击 **退出** 清除登录与 2FA Cookie。
 
@@ -151,6 +153,41 @@ GET /api/sessions/{id}/recording/part-001.cast  # 单个 cast 分片
 可通过环境变量关闭或调整存储路径（见下方 **配置**）。录像文件默认不纳入 git（`storage/recordings/`）。
 
 > **说明**：btop 等使用 `\033[?2026h` 同步刷新的 TUI，录制端会等待整帧输出后再落盘，以保证回放画面完整。
+
+## AI 助手（Neuron）
+
+SSH 连接成功后，终端页右侧出现 **AI 助手** 侧栏。基于 [reactphp-x-ai-v2](https://github.com/reactphp-x/ai-v2) 的 Neuron AI 能力嵌入：
+
+1. 在侧栏描述任务（如「查看磁盘使用并清理 /tmp」）
+2. AI 分析后调用 `run_ssh_command` 提议命令
+3. 侧栏弹出 **待审核命令**，你点击 **批准** 或 **拒绝**
+4. 批准后命令写入 PTY 执行，输出回传 AI 继续推理
+5. 需求不明确时 AI 可能通过 `ask_user` 弹出选项让你选择
+
+配置（`.env`）：
+
+```env
+AI_ENABLED=true
+NEURON_AI_KEY=sk-...
+NEURON_AI_MODEL=gpt-4o-mini
+# NEURON_AI_BASE_URL=https://api.deepseek.com/v1
+NEURON_AI_HTTP_TIMEOUT=120
+AI_COMMAND_TIMEOUT=30
+REDIS_URL=127.0.0.1:6379   # 可选，HTTP_WORKERS>1 时建议配置
+```
+
+API（均需 Basic Auth + 2FA）：
+
+```text
+GET  /api/ai/bootstrap?conn_id={ws_conn_id}
+POST /api/ai/chat/stream           { conn_id, message }
+POST /api/ai/chat/approval/stream  { conn_id, approved: 1|0 }
+POST /api/ai/chat/feedback/stream  { conn_id, answers: {} }
+POST /api/ai/chat/stop             { conn_id }
+POST /api/ai/chat/reset            { conn_id }
+```
+
+`conn_id` 为 WebSocket `ready` 消息中的 `_id`，与当前 SSH 会话绑定。命令审核记录写入 **操作日志**（`ai.command.approved` / `ai.command.rejected`）。
 
 ## 认证说明
 
@@ -213,6 +250,12 @@ BASIC_AUTH_PUBLIC_PATHS=/health,/logout,/login
 SESSION_RECORDING_ENABLED=true
 SESSION_RECORDING_DIR=storage/recordings
 SESSION_RECORDING_PART_BYTES=5242880
+
+# AI 助手
+AI_ENABLED=true
+NEURON_AI_KEY=
+NEURON_AI_MODEL=gpt-4o-mini
+AI_COMMAND_TIMEOUT=30
 ```
 
 全局 SSH 候选密钥列表见 `config/ssh.php` 的 `identity_candidates`。

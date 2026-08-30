@@ -32,6 +32,7 @@ final class SshTerminalGateway
         private readonly SessionService $sessionService,
         private readonly SshLiveRegistry $liveRegistry,
         private readonly ?SessionRecorder $recorder = null,
+        private readonly ?SshSessionBridge $sessionBridge = null,
     ) {
     }
 
@@ -210,10 +211,18 @@ final class SshTerminalGateway
 
                         $session = new SshTerminalSession();
                         $this->sessions[$conn->_id] = $session;
+                        $this->sessionBridge?->register(
+                            $conn->_id,
+                            $pending['username'],
+                            $session,
+                            $target,
+                            $sessionId,
+                        );
 
                         $session->connect(
                             $target,
                             onOutput: function (string $chunk) use ($conn, $sessionId): void {
+                                $this->sessionBridge?->appendOutput($conn->_id, $chunk);
                                 $this->liveRegistry->writeOutput($conn->_id, $chunk);
                                 $this->recorder?->writeOutput($sessionId, $chunk);
                                 $this->sendJson($conn, [
@@ -284,6 +293,7 @@ final class SshTerminalGateway
                                 }
 
                                 unset($this->sessions[$conn->_id]);
+                                $this->sessionBridge?->unregister($conn->_id);
 
                                 if (isset($this->connectionSessions[$conn->_id])) {
                                     $this->sessionService->markClosed($this->connectionSessions[$conn->_id]);
@@ -346,6 +356,10 @@ final class SshTerminalGateway
             WorkerLog::info(sprintf('WebSocket close conn=%s', $conn->_id));
             $session->close();
             unset($this->sessions[$conn->_id]);
+        }
+
+        if ($connId = $conn->_id) {
+            $this->sessionBridge?->unregister($connId);
         }
     }
 

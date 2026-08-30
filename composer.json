@@ -11,7 +11,10 @@
         "reactphp-x/websocket-group": "^1.0",
         "wpjscc/twofactorauth": "^3.1",
         "bacon/bacon-qr-code": "^3.1",
-        "reactphp-x/log": "dev-master"
+        "reactphp-x/log": "dev-master",
+        "reactphp-x/redis-pool": "^2.0",
+        "react/async": "^4.3",
+        "neuron-core/neuron-ai": "^3.16"
     },
     "autoload": {
         "psr-4": {

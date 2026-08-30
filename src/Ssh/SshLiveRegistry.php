@@ -99,6 +99,22 @@ final class SshLiveRegistry
         ]);
     }
 
+    /**
+     * @return array{cols: int, rows: int}
+     */
+    public function getTerminalSize(string $connId): array
+    {
+        $entry = $this->live[$connId] ?? null;
+        if ($entry === null) {
+            return ['cols' => 80, 'rows' => 24];
+        }
+
+        return [
+            'cols' => max(1, (int) $entry['cols']),
+            'rows' => max(1, (int) $entry['rows']),
+        ];
+    }
+
     public function writeOutput(string $connId, string $chunk): void
     {
         if (!isset($this->live[$connId])) {

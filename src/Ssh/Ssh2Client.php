@@ -160,6 +160,52 @@ final class Ssh2Client
         $this->workspace = null;
     }
 
+    public static function buildExecShellCommand(
+        OpenSshWorkspace $workspace,
+        string $command,
+        int $cols = 80,
+        int $rows = 24,
+    ): string {
+        $scriptBody = implode("\n", [
+            sprintf('stty cols %d rows %d 2>/dev/null', max(1, $cols), max(1, $rows)),
+            'export TERM=${TERM:-xterm-256color}',
+            $command,
+        ]);
+        $payload = base64_encode($scriptBody);
+        $shellRun = sprintf(
+            'if command -v zsh >/dev/null 2>&1; then exec zsh -ic "$(printf \'%%s\' \'%s\' | base64 -d)"; else exec bash -lc "$(printf \'%%s\' \'%s\' | base64 -d)"; fi',
+            $payload,
+            $payload,
+        );
+        $withScript = sprintf('script -qefc %s /dev/null', escapeshellarg($shellRun));
+        // Prefer script(1) for a PTY; fall back to the shell directly when util-linux script is unavailable.
+        $remote = sprintf(
+            'if command -v script >/dev/null 2>&1; then %s; else %s; fi',
+            $withScript,
+            $shellRun,
+        );
+
+        $ssh = escapeshellarg(self::sshBinary());
+        $config = escapeshellarg($workspace->configPath);
+        $alias = escapeshellarg(OpenSshWorkspace::TARGET_ALIAS);
+
+        return sprintf(
+            'exec %s -F %s -T -o BatchMode=no -o RequestTTY=no %s %s',
+            $ssh,
+            $config,
+            $alias,
+            escapeshellarg($remote),
+        );
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public static function workspaceProcessEnv(OpenSshWorkspace $workspace): array
+    {
+        return self::processEnv($workspace);
+    }
+
     private static function buildCommand(OpenSshWorkspace $workspace, bool $probe, int $cols = 80, int $rows = 24): string
     {
         $ssh = escapeshellarg(self::sshBinary());
