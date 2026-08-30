@@ -1,0 +1,10 @@
+/vendor/
+/node_modules/
+/.env
+/reactphp-x-worker.log
+/reactphp-x-worker.start.php.pid
+/reactphp-x-worker.start.php.status
+/reactphp-x-web-ssh.access.log
+/storage/logs/
+/.phpunit.cache/
+/daemon-fork-debug.log

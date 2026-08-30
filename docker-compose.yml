@@ -1,0 +1,22 @@
+services:
+  web-ssh:
+    build:
+      context: .
+      target: development
+      args:
+        USER_ID: ${USER_ID:-1000}
+        GROUP_ID: ${GROUP_ID:-1000}
+    ports:
+      - "${HTTP_PORT:-8097}:8097"
+    volumes:
+      - ./:/var/www/html
+      - ${SSH_DIR:-~/.ssh}:/home/www-data/.ssh:ro
+    env_file:
+      - .env
+    environment:
+      PHP_OPCACHE_ENABLE: "0"
+      HTTP_LISTEN: "0.0.0.0:8097"
+      HOME: /home/www-data
+      SSH_IDENTITY_FILE: /home/www-data/.ssh/id_rsa
+    command: php start.php start
+    working_dir: /var/www/html
