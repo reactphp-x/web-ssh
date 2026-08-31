@@ -5,7 +5,8 @@ declare(strict_types=1);
 
 use App\Ssh\SshAskpass;
 
-$autoload = dirname(__DIR__) . '/vendor/autoload.php';
+$root = getenv('WEBSSH_ROOT') ?: dirname(__DIR__);
+$autoload = $root . '/vendor/autoload.php';
 if (!is_readable($autoload)) {
     fwrite(STDERR, "autoload not found\n");
     exit(1);

@@ -25,11 +25,16 @@ final class OpenSshWorkspace
             throw new RuntimeException('Failed to create OpenSSH workspace.');
         }
 
+        $askpassSrc = dirname(__DIR__, 2) . '/bin/ssh-askpass.php';
+        if (!is_readable($askpassSrc)) {
+            throw new RuntimeException('Failed to prepare SSH askpass helper.');
+        }
+
         $workspace = new self(
             $directory,
             $directory . '/ssh_config',
             $directory . '/askpass.json',
-            $directory . '/ssh-askpass.php',
+            $askpassSrc,
         );
 
         try {
@@ -55,12 +60,6 @@ final class OpenSshWorkspace
                 json_encode(self::askpassMap($preparedHops, $target, $targetIdentity), JSON_UNESCAPED_SLASHES),
             );
             chmod($workspace->askpassMapPath, 0600);
-
-            $askpassSrc = dirname(__DIR__, 2) . '/bin/ssh-askpass.php';
-            if (!is_readable($askpassSrc) || !@copy($askpassSrc, $workspace->askpassPath)) {
-                throw new RuntimeException('Failed to prepare SSH askpass helper.');
-            }
-            chmod($workspace->askpassPath, 0700);
         } catch (\Throwable $exception) {
             $workspace->cleanup();
 

@@ -250,6 +250,7 @@ final class Ssh2Client
         $env['SSH_ASKPASS_REQUIRE'] = 'force';
         $env['DISPLAY'] = $env['DISPLAY'] ?? ':0';
         $env['WEBSSH_ASKPASS_MAP'] = $workspace->askpassMapPath;
+        $env['WEBSSH_ROOT'] = dirname(__DIR__, 2);
         $env['COLUMNS'] = (string) max(1, $cols);
         $env['LINES'] = (string) max(1, $rows);
         $env['LANG'] = 'C.UTF-8';
