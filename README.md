@@ -2,14 +2,14 @@
 
 **带 AI 的 Web SSH 运维平台** — 用自然语言描述任务，AI 提议命令、你审核批准、自动在远端 exec 并继续推理；同时提供多标签终端、跨主机编排、现场查看与会话回放。
 
-> 配置 `NEURON_AI_KEY` 后，**AI 助手**（单主机）与 **AI 编排**（跨主机）即可使用。底层仍是自托管 Web SSH 网关：凭据加密、跳板机、审计与 2FA。
+> 在侧边栏 **AI 设置**（`#/settings/ai`）中配置 Provider 与 API Key 并启用后，**AI 助手**（单主机）与 **AI 编排**（跨主机）即可使用。底层仍是自托管 Web SSH 网关：凭据加密、跳板机、审计与 2FA。
 
 ## 目录
 
 - [AI 亮点](#ai-highlights)
 - [AI 编排](#ai-orchestration)
 - [AI 助手（终端页）](#ai-assistant)
-- [AI 配置（共用）](#ai-config)
+- [AI 配置（Web 面板）](#ai-config)
 - [快速上手](#quick-start)
 - [解决的问题](#problems)
 - [功能概览](#features)
@@ -42,6 +42,7 @@
 | **exec 与 PTY 分离** | AI 走独立 SSH exec，输出进 **现场** 流（`[AI]` 标记），不污染交互终端 |
 | **可审计可回放** | 命令批准/拒绝写入操作日志；每次 exec 录像 + 现场 transcript，刷新可恢复 |
 | **工具链透明** | 消息 timeline 与工具卡片交错展示，每次 `list_hosts` / `run_ssh_command` 可展开查看 |
+| **Web 面板配置 AI** | 侧边栏 **AI 设置**：多套 Provider 配置、启用开关、模型列表拉取、连接测试，密钥加密存 SQLite |
 
 **典型用法**
 
@@ -98,6 +99,7 @@ AI：读取输出 → 继续下一条命令或切换主机 → 汇总结论
 | **工具 timeline** | 聊天与工具调用交错展示，默认折叠可展开 |
 | **现场** | AI 命令输出实时 SSE + 持久化 transcript（编排）；含 `[AI]` 前缀标记 |
 | **AI 会话历史** | 继续对话、查看现场、按分段回放录像 |
+| **AI 设置** | Web 面板管理多套 LLM 配置；顶部启用 + 选择生效配置；支持 OpenAI 兼容、Deepseek、Anthropic、Gemini、Ollama 等 |
 
 ### 平台基础
 
@@ -334,6 +336,8 @@ BASIC_AUTH_PASSWORD=change-me
 php -r "echo 'base64:'.base64_encode(random_bytes(32)).PHP_EOL;"
 ```
 
+首次登录后，在 **AI 设置** 中配置 LLM Provider（详见 [AI 配置](#ai-config)）。
+
 <a id="start"></a>
 
 ## 启动
@@ -375,8 +379,8 @@ docker compose up --build
 
 ### 三步启用 AI
 
-1. 复制 `.env.example` → `.env`，设置 `NEURON_AI_KEY` 与 `BASIC_AUTH_*`
-2. `composer install` → `php start.php start`，浏览器打开 `/login` 并完成 TOTP
+1. 复制 `.env.example` → `.env`，设置 `APP_KEY` 与 `BASIC_AUTH_*`，`composer install` 后 `php start.php start`
+2. 浏览器打开 `/login` 并完成 TOTP → 侧边栏 **AI 设置** 新建配置（Provider、API Key、模型），勾选 **启用 AI 助手** 并选择要使用的配置
 3. **主机管理** 录入至少一台主机
 
 ### 推荐：AI 编排（跨主机）
@@ -577,25 +581,58 @@ GET  /api/ai/sessions/{id}/recording               # 各 segment 录像 manifest
 
 ## AI 配置（共用）
 
-终端 **AI 助手** 与 **AI 编排** 共用以下环境变量（须设置 `NEURON_AI_KEY`）：
+终端 **AI 助手** 与 **AI 编排** 共用同一套 AI 配置，通过 Web 面板管理（**不再**依赖 `.env` 中的 `NEURON_AI_*` 变量）。
 
-```env
-AI_ENABLED=true
-NEURON_AI_KEY=sk-...
-NEURON_AI_MODEL=gpt-4o-mini
-# NEURON_AI_PROVIDER=openai
-# NEURON_AI_BASE_URL=https://api.deepseek.com/v1
-NEURON_AI_HTTP_TIMEOUT=120
-AI_COMMAND_TIMEOUT=30
-NEURON_AI_TOOL_MAX_RUNS=30    # 单轮对话工具调用上限（默认 30）
-NEURON_CHAT_CONTEXT_WINDOW=50000          # 对话历史上限（token，超出则硬裁剪）
-NEURON_CHAT_SUMMARIZATION_ENABLED=true    # 接近上限时用 LLM 总结旧消息（见 Neuron Summarization middleware）
-NEURON_CHAT_SUMMARIZATION_KEEP=5          # 总结后保留最近 N 条消息
-# NEURON_CHAT_SUMMARIZATION_MAX_TOKENS=40000  # 触发总结的阈值，默认 context_window 的 80%
-REDIS_URL=127.0.0.1:6379      # HTTP_WORKERS>1 时建议配置
+### 入口
+
+侧边栏 → **AI 设置**（`#/settings/ai`）
+
+### 界面说明
+
+| 区域 | 作用 |
+|---|---|
+| **顶部** | **启用 AI 助手** 开关；启用后右侧 **使用配置** 下拉框选择当前生效的配置 |
+| **配置 Tab** | 仅用于**编辑**各套配置（名称、Provider、模型、密钥等），点击 Tab **不会**切换生效配置 |
+| **表单** | Provider、模型、API Key；**拉取列表** 从 Provider API 获取可选模型；**测试连接** 验证密钥与模型 |
+
+可保存多套配置（如 Deepseek、Ollama、OpenAI），切换生效配置时**无需重新输入密钥**。
+
+### 支持的 Provider
+
+OpenAI、Deepseek、Anthropic、Gemini、Ollama、Mistral、Cohere、Grok、ZAI、DashScope、HuggingFace、Azure OpenAI、Bedrock、Gemini Vertex、Anthropic Vertex、OpenAI 兼容接口（`openailike`）等。底层通过 [neuron-core/neuron-ai](https://github.com/neuron-core/neuron-ai) 统一接入。
+
+### 高级选项
+
+可在各配置中调整：HTTP 超时、命令超时、工具调用上限、上下文窗口、对话总结阈值等（原 `NEURON_CHAT_*` / `AI_COMMAND_TIMEOUT` 等能力）。
+
+### 存储与安全
+
+- 配置与 API Key 存 SQLite 表 `ai_profiles`，密钥经 `APP_KEY` 加密
+- 仅当前**选中的**配置会被 Agent 加载使用
+- 修改 AI 设置会写入 **操作日志**
+
+### 从旧版 `.env` 迁移
+
+若数据库中尚无 AI 配置，且 `.env` 里仍留有 `NEURON_AI_KEY`（或 `OPENAI_KEY`），服务启动时会**一次性**导入为名为「默认」的配置并选中。导入完成后请在面板中维护，无需再改 `.env`。
+
+### API
+
+均需 Basic Auth + 2FA。
+
+```text
+GET    /api/settings/ai                              # 配置列表 + 当前生效项
+GET    /api/settings/ai/profiles/{id}                # 单套配置详情
+POST   /api/settings/ai/profiles                       # 新建配置
+PUT    /api/settings/ai/profiles/{id}                # 更新配置（支持部分字段）
+DELETE /api/settings/ai/profiles/{id}                # 删除配置
+POST   /api/settings/ai/profiles/{id}/select         # 切换生效配置
+POST   /api/settings/ai/test                         # 测试连接
+POST   /api/settings/ai/models                       # 拉取 Provider 模型列表
 ```
 
-长对话会先尝试 **总结** 较早的消息（保留最近若干条），而不是直接丢弃；若仍超过 `NEURON_CHAT_CONTEXT_WINDOW` 才会硬裁剪。关闭总结：`NEURON_CHAT_SUMMARIZATION_ENABLED=false`。
+### 多 Worker 与 Redis
+
+`HTTP_WORKERS>1` 时建议配置 `REDIS_URL`，用于 AI 线程锁与 SSE 状态同步（见 [`.env.example`](.env.example)）。
 
 <a id="field-vs-live"></a>
 
@@ -719,12 +756,8 @@ SSH_CONNECT_TIMEOUT=10
 SESSION_RECORDING_ENABLED=true
 SESSION_RECORDING_DIR=storage/recordings
 
-# AI 助手
-AI_ENABLED=true
-NEURON_AI_KEY=
-NEURON_AI_MODEL=gpt-4o-mini
-AI_COMMAND_TIMEOUT=30
-NEURON_AI_TOOL_MAX_RUNS=30
+# AI — 在 Web 面板配置：侧边栏 → AI 设置 (#/settings/ai)
+# HTTP_WORKERS>1 时建议配置 REDIS_URL
 
 # 安全
 COOKIE_SECURE=false
@@ -763,7 +796,7 @@ Neuron Agents
   ├── SshAgent + RunSshCommandTool（终端，conn_id）
   └── OrchestratorAgent + list_hosts / run_ssh_command（编排，ai_session_id）
 
-Storage: SQLite（主机、会话、ai_sessions、审计）+ storage/recordings/Y/m/d/ + storage/neuron/Y/m/d/
+Storage: SQLite（主机、会话、ai_sessions、ai_profiles、审计）+ storage/recordings/Y/m/d/ + storage/neuron/Y/m/d/
 ```
 
 > 录像与 neuron 聊天/现场文件按 **`Y/m/d` 日期子目录**落盘；旧版扁平路径（如 `recordings/{id}`、`ai-sessions/live/{id}.log`）仍可读取。
