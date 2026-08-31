@@ -1,6 +1,68 @@
 # reactphp-x/web-ssh
 
-浏览器里的 SSH 终端与管理平台。集中管理主机凭据、多标签 Web 终端、AI 辅助运维、实时旁路、现场查看与会话回放。
+**带 AI 的 Web SSH 运维平台** — 用自然语言描述任务，AI 提议命令、你审核批准、自动在远端 exec 并继续推理；同时提供多标签终端、跨主机编排、现场查看与会话回放。
+
+> 配置 `NEURON_AI_KEY` 后，**AI 助手**（单主机）与 **AI 编排**（跨主机）即可使用。底层仍是自托管 Web SSH 网关：凭据加密、跳板机、审计与 2FA。
+
+## 目录
+
+- [AI 亮点](#ai-highlights)
+- [AI 编排](#ai-orchestration)
+- [AI 助手（终端页）](#ai-assistant)
+- [AI 配置（共用）](#ai-config)
+- [快速上手](#quick-start)
+- [解决的问题](#problems)
+- [功能概览](#features)
+  - [系统交互概览](#architecture-diagrams)
+  - [终端、AI、现场、实时现场、回放怎么选？](#usage-guide)
+- [现场与实时现场](#field-vs-live)
+- [会话录像、现场与回放](#recording)
+- [技术栈](#tech-stack)
+- [要求](#requirements)
+- [安装](#install)
+- [启动](#start)
+- [Docker](#docker)
+- [认证说明](#auth)
+- [WebSocket 协议](#websocket)
+- [配置](#config)
+- [架构](#architecture)
+- [安全提示](#security)
+- [测试](#test)
+- [许可证](#license)
+
+<a id="ai-highlights"></a>
+
+## AI 亮点
+
+| 能力 | 一句话 |
+|---|---|
+| **自然语言运维** | 描述「查磁盘、看 nginx 日志、重启服务」等任务，AI 拆解步骤并给出可执行命令 |
+| **人工批准闸门** | 写操作必须点 **批准** 才执行；只读工具（列主机、读上下文）自动运行 |
+| **双模式覆盖** | **AI 助手** 绑定当前终端主机；**AI 编排** 跨多台机器自动选机、分段执行 |
+| **exec 与 PTY 分离** | AI 走独立 SSH exec，输出进 **现场** 流（`[AI]` 标记），不污染交互终端 |
+| **可审计可回放** | 命令批准/拒绝写入操作日志；每次 exec 录像 + 现场 transcript，刷新可恢复 |
+| **工具链透明** | 消息 timeline 与工具卡片交错展示，每次 `list_hosts` / `run_ssh_command` 可展开查看 |
+
+**典型用法**
+
+```text
+你：检查 web-01 和 web-02 的 nginx 是否在运行，磁盘是否超过 80%
+AI：list_hosts → 选定主机 → 提议 run_ssh_command（需批准）
+你：批准
+AI：读取输出 → 继续下一条命令或切换主机 → 汇总结论
+```
+
+**两种 AI 怎么选？**
+
+| 场景 | 推荐 |
+|---|---|
+| 已打开某台机器终端，边操作边让 AI 帮忙 | **AI 助手**（终端页侧栏） |
+| 多台巡检、跨机串联任务、无需先开 Web 终端 | **AI 编排**（`#/ai`） |
+| 需要亲手跑 vim / htop / Claude Code | **Web 终端** PTY（与 AI 并存） |
+
+详细说明见 [AI 编排](#ai-orchestration) 与 [AI 助手](#ai-assistant)。
+
+<a id="problems"></a>
 
 ## 解决的问题
 
@@ -11,33 +73,45 @@
 - **跳板机链路复杂** — 经堡垒机/多级跳转连接时，手工维护 `~/.ssh/config` 容易出错
 - **协作与监管** — 需要查看「谁连了哪台机器、做了什么」，纯 SSH 客户端难以留痕
 - **暴露面风险** — 把 SSH 直接暴露到公网不安全，需要登录鉴权、审计与访问控制
-- **重复劳动** — 查日志、看磁盘、改配置等常见任务，希望用自然语言描述后由系统提议命令
+- **重复劳动** — 查日志、看磁盘、改配置等任务，希望用自然语言描述后由 AI 提议命令并代执行
 
-本项目提供一个 **自托管的 Web SSH 网关**：
+本项目是一个 **自托管、AI 原生的 Web SSH 网关**：
 
-1. 在浏览器里打开终端，无需安装本地 SSH 客户端
-2. 集中管理主机与加密存储的凭据，支持跳板机一键连接
-3. 可选 **AI 助手**（单主机）或 **AI 编排**（跨主机）：描述任务 → 审核命令 → 自动 exec 并继续推理
-4. **现场**查看单次会话输出，**实时现场**监控多路连接；结束后可现场滚动查看或 asciinema 回放
-5. 通过 Basic Auth + TOTP 双因子、速率限制与 Cookie 策略控制访问
+1. **AI 编排 / AI 助手** — 自然语言 → 审核命令 → 自动 exec → 多轮推理（核心能力）
+2. **现场与回放** — AI / 终端输出可实时查看、持久化 transcript、asciinema 录像
+3. 浏览器多标签 **Web 终端**（PTY），支持 vim、htop、Claude Code 等 TUI
+4. 集中管理主机凭据、跳板机；Basic Auth + TOTP 双因子与操作审计
 
 适合内网运维面板、开发跳板、小团队服务器管理等场景。**不应未经防护直接暴露到公网。**
 
+<a id="features"></a>
+
 ## 功能概览
+
+### AI 能力
+
+| 模块 | 说明 |
+|---|---|
+| **AI 编排** | 跨主机会话（`#/ai`）；`list_hosts` 选机、`run_ssh_command` 分段 exec；**无需先开终端** |
+| **AI 助手** | 终端页侧栏；绑定当前主机 `conn_id`；自然语言任务 + **批准后才执行** |
+| **命令审核** | 写操作暂停等待批准；批准/拒绝记入操作日志 |
+| **工具 timeline** | 聊天与工具调用交错展示，默认折叠可展开 |
+| **现场** | AI 命令输出实时 SSE + 持久化 transcript（编排）；含 `[AI]` 前缀标记 |
+| **AI 会话历史** | 继续对话、查看现场、按分段回放录像 |
+
+### 平台基础
 
 | 模块 | 说明 |
 |---|---|
 | **主机管理** | SQLite 存储主机、分组、标签；密码/私钥加密保存，支持跳板机 |
-| **Web 终端** | xterm.js 多标签 **PTY**，OpenSSH 子进程连接远端；支持 TUI（vim、htop、Claude Code 等） |
-| **AI 助手** | 终端页侧栏；绑定单主机 `conn_id`，自然语言描述任务，**批准后才执行**命令 |
-| **AI 编排** | 独立跨主机会话（`#/ai`）；无需先开终端，`list_hosts` 选机、`run_ssh_command` 分段 exec，左侧 **现场** 持久化输出 |
-| **现场** | 终端页 / AI 编排页左栏：查看当前会话输出（手动输入 + AI 命令）；AI 编排支持持久化 transcript，刷新后可恢复 |
-| **实时现场** | 左侧菜单 `#/live`：多路 SSE 旁路监控**进行中**的 SSH 连接（只读，不可输入） |
-| **会话记录** | 连接起止、状态、耗时；自动写入 asciinema cast（`storage/recordings/`） |
-| **现场查看** | 会话记录 / AI 会话历史中，以只读终端滚动查看完整输出（非定时回放） |
-| **会话回放** | 对已结束会话播放 asciinema 录像；多分片、进度控制、窗口自适应 |
-| **操作审计** | 主机增删改、AI 命令批准/拒绝等 API 操作日志 |
-| **登录鉴权** | HTTP Basic Auth + TOTP 双因子（可选 Cookie 登录页） |
+| **Web 终端** | xterm.js 多标签 **PTY**，OpenSSH 子进程；支持 TUI 交互 |
+| **实时现场** | `#/live` 多路 SSE 旁路监控进行中的 SSH 连接 |
+| **会话记录** | 连接起止、状态、耗时；asciinema cast（`storage/recordings/Y/m/d/`） |
+| **现场查看 / 回放** | 历史输出滚动查看或按时间轴播放录像 |
+| **操作审计** | 主机增删改、AI 命令批准/拒绝等 |
+| **登录鉴权** | HTTP Basic Auth + TOTP 双因子 |
+
+<a id="architecture-diagrams"></a>
 
 ### 系统交互概览
 
@@ -184,6 +258,8 @@ sequenceDiagram
 
 > AI 命令输出以 `[AI] $ command` 形式写入**现场** SSE 流，不会混入左侧交互终端。
 
+<a id="usage-guide"></a>
+
 ### 终端、AI、现场、实时现场、回放怎么选？
 
 | 你想做什么 | 用哪个 |
@@ -208,6 +284,8 @@ sequenceDiagram
 
 连接后在**左侧终端**里像本地一样启动即可；窗口大小变化会通过 `resize` 同步到 PTY。内置 **AI 助手**是另一套能力，用于「描述任务 → 审核命令 → 自动 exec」，不替代上述 TUI 工具。
 
+<a id="tech-stack"></a>
+
 ## 技术栈
 
 | 层 | 组件 |
@@ -221,6 +299,8 @@ sequenceDiagram
 | 可选 | Redis（多 Worker 时 AI 线程锁 / SSE 状态） |
 | 2FA | [wpjscc/twofactorauth](https://github.com/wpjscc/twofactorauth) + Bacon QR Code |
 
+<a id="requirements"></a>
+
 ## 要求
 
 - PHP 8.2+
@@ -228,6 +308,8 @@ sequenceDiagram
 - 系统：`openssh-client`（Docker 镜像已包含）
 - Linux / macOS（Worker 模式不支持 Windows）
 - Composer 2.x
+
+<a id="install"></a>
 
 ## 安装
 
@@ -252,6 +334,8 @@ BASIC_AUTH_PASSWORD=change-me
 php -r "echo 'base64:'.base64_encode(random_bytes(32)).PHP_EOL;"
 ```
 
+<a id="start"></a>
+
 ## 启动
 
 ```bash
@@ -263,6 +347,8 @@ php start.php status
 ```
 
 默认监听地址由 `HTTP_LISTEN` 决定（`.env.example` 为 `0.0.0.0:8095`）。开发模式下会自动监视 `src/`、`config/`、`public/` 变更并 reload。
+
+<a id="docker"></a>
 
 ## Docker
 
@@ -283,17 +369,37 @@ docker compose up --build
 
 > `docker-compose.yml` 中的 `environment` 会覆盖 `.env` 里的 `HTTP_LISTEN`。主机私钥路径请使用容器内路径（如 `~/.ssh/id_rsa`）。
 
+<a id="quick-start"></a>
+
 ## 快速上手
 
-1. 打开 `/login`，输入平台账号密码
-2. 首次使用绑定 TOTP（扫码）；之后每次登录输入 6 位验证码
-3. 在 **主机管理** 中新建主机（地址、端口、用户名、密码或私钥、可选跳板机）
-4. 进入 **终端** 建立 SSH 会话；主机列表 **登录** 默认左侧为交互终端，**AI 助手** 进入同一终端页但默认左侧为 **现场**
-5. 终端页右侧 **AI 助手**（需配置 `NEURON_AI_KEY`）可描述运维任务；**左侧顶部**可切换 **现场 / 终端**（终端可手动输入）
-6. 菜单 **实时现场** 可旁路监控多路连接；**会话记录** 中可 **现场** 滚动查看或 **回放** 已结束的录像
-7. 侧边栏 **AI 编排**（`#/ai`）可新建跨主机会话：描述任务 → AI 选机并提议命令 → 审核后在远端 exec，无需先打开 Web 终端
+### 三步启用 AI
+
+1. 复制 `.env.example` → `.env`，设置 `NEURON_AI_KEY` 与 `BASIC_AUTH_*`
+2. `composer install` → `php start.php start`，浏览器打开 `/login` 并完成 TOTP
+3. **主机管理** 录入至少一台主机
+
+### 推荐：AI 编排（跨主机）
+
+1. 侧边栏 **AI 编排** → **新建会话**
+2. 输入任务，例如：「列出所有主机，检查根分区使用率超过 80% 的机器」
+3. AI 调用 `list_hosts`、提议 `run_ssh_command` → 底部 **批准** 或 **拒绝**
+4. 左侧 **现场** 查看命令输出；可多轮对话、切换主机继续
+
+### 单主机：终端 + AI 助手
+
+1. 主机列表点 **AI 助手**（或 **登录** 后在终端页打开右侧 AI 侧栏）
+2. 描述任务；批准 AI 提议的命令
+3. 左侧 **现场** 看 AI 输出，**终端** 标签可手动输入 / 跑 TUI
+
+### 其他
+
+- **实时现场**（`#/live`）— 同时监控多路 SSH 连接
+- **会话记录** — 事后 **现场** 滚动查看或 **回放** 录像
 
 未登录访问 `/` 会重定向到 `/login`；点击 **退出** 清除登录与 2FA Cookie。
+
+<a id="ai-assistant"></a>
 
 ## AI 助手（终端页）
 
@@ -333,6 +439,8 @@ POST /api/ai/chat/reset            { conn_id }
 - 不支持交互式命令（vim、top、mysql 客户端等）；请在左侧 PTY 终端手动操作
 - 仅 `run_ssh_command` 会触发待审核；只读工具自动执行
 
+<a id="ai-orchestration"></a>
+
 ## AI 编排
 
 **AI 编排**是独立于 Web 终端的跨主机运维模式：在浏览器里描述任务，由 AI 从平台主机列表中选目标、提议 shell 命令，你审核后自动 SSH exec 执行，并可在多台机器间切换继续推理。**无需先打开某台主机的交互终端**。
@@ -342,6 +450,8 @@ POST /api/ai/chat/reset            { conn_id }
 - 批量巡检多台服务器（磁盘、负载、服务状态）
 - 在 A 机查日志、B 机改配置、C 机重启服务的串联任务
 - 离开页面后从历史会话继续，或回看命令输出
+
+<a id="ai-orchestration-compare"></a>
 
 ### 与终端 AI 助手的区别
 
@@ -356,6 +466,8 @@ POST /api/ai/chat/reset            { conn_id }
 | 录像 | 单次 SSH 会话一条 | 每个主机 segment 独立录像，回放按段顺序播放 |
 | Agent | `SshAgent` | `OrchestratorAgent` |
 
+<a id="ai-orchestration-routes"></a>
+
 ### 页面与路由
 
 | 路由 | 说明 |
@@ -367,6 +479,8 @@ POST /api/ai/chat/reset            { conn_id }
 **PC 布局**：左侧 **现场**（命令输出）与右侧 AI 对话之间可**拖动分隔线**调整宽度，比例保存在浏览器 `localStorage`。
 
 **移动端**：「现场 | AI 对话」标签切换，无分栏拖动。
+
+<a id="ai-orchestration-concepts"></a>
 
 ### 核心概念
 
@@ -383,13 +497,15 @@ flowchart LR
 
 | 概念 | 说明 |
 |---|---|
-| **ai_session** | 一次编排对话 thread，对应 SQLite `ai_sessions` 表与聊天文件 `storage/neuron/ai-sessions/neuron_{id}.chat` |
+| **ai_session** | 一次编排对话 thread，对应 SQLite `ai_sessions` 表与聊天文件 `storage/neuron/ai-sessions/Y/m/d/neuron_{id}.chat` |
 | **segment** | 在某台主机上的一段 exec 生命周期；切换 `host_id` 时结束旧 segment、开启新 segment |
 | **live_key** | segment 对应的 SSE 旁路键，供 **现场** 实时推送 |
-| **live transcript** | 编排会话全部命令输出的持久化文本，路径 `storage/neuron/ai-sessions/live/{id}.log` |
-| **segment 录像** | 每个 segment 对应一条 `sessions` 记录（`session_type=ai_exec`），写入 `storage/recordings/{session_id}/` |
+| **live transcript** | 编排会话全部命令输出的持久化文本，路径 `storage/neuron/ai-sessions/Y/m/d/live/{id}.log` |
+| **segment 录像** | 每个 segment 对应一条 `sessions` 记录（`session_type=ai_exec`），写入 `storage/recordings/Y/m/d/{session_id}/` |
 
 切换主机时，左侧 **现场** 会插入主机分隔线；各 segment 的 shell 环境**相互独立**（cwd、环境变量不共享）。
+
+<a id="ai-orchestration-workflow"></a>
 
 ### 工作流程
 
@@ -399,6 +515,8 @@ flowchart LR
 4. 批准后 `SshExecBridge` 对该 `host_id` 建立（或复用）exec 连接并执行；输出写入左侧 **现场** 与 live log
 5. AI 根据输出继续推理，可切换主机执行下一条命令，直至任务完成
 6. 刷新 `#/ai/session/{id}` 后，**现场** 通过 SSE `replay` 事件或 transcript API 恢复；聊天 timeline 含工具卡片
+
+<a id="ai-orchestration-tools"></a>
 
 ### 编排工具
 
@@ -411,6 +529,8 @@ flowchart LR
 
 > 编排模式下 **`run_ssh_command` 必须带 `host_id`**；终端 AI 则固定在当前 `conn_id` 对应主机上执行。
 
+<a id="ai-orchestration-field"></a>
+
 ### 现场、回放与历史
 
 | 操作 | 入口 | 数据来源 |
@@ -421,6 +541,8 @@ flowchart LR
 | 按时间轴回放 | `#/ai/sessions` → **回放** | 各 segment 的 asciinema manifest 顺序播放 |
 
 AI 命令在现场中以 `[AI] $ command` / `[AI] exit N` 标记；切换主机时有 `────────── 主机 · … ──────────` 分隔。
+
+<a id="ai-orchestration-api"></a>
 
 ### API
 
@@ -451,6 +573,8 @@ GET  /api/ai/sessions/{id}/recording               # 各 segment 录像 manifest
 - **主机须预先录入**：只能对 **主机管理** 中已配置的主机执行；AI 通过 `list_hosts` 获取列表
 - **单用户隔离**：会话按登录用户名隔离，只能访问自己的 `ai_session`
 
+<a id="ai-config"></a>
+
 ## AI 配置（共用）
 
 终端 **AI 助手** 与 **AI 编排** 共用以下环境变量（须设置 `NEURON_AI_KEY`）：
@@ -467,6 +591,8 @@ NEURON_AI_TOOL_MAX_RUNS=30    # 单轮对话工具调用上限（默认 30）
 REDIS_URL=127.0.0.1:6379      # HTTP_WORKERS>1 时建议配置
 ```
 
+<a id="field-vs-live"></a>
+
 ## 现场与实时现场
 
 「**现场**」和「**实时现场**」是两个不同入口，不要混用：
@@ -475,6 +601,8 @@ REDIS_URL=127.0.0.1:6379      # HTTP_WORKERS>1 时建议配置
 |---|---|---|
 | **现场** | 终端页 / AI 编排页左栏；会话记录 / AI 会话历史的「现场」 | 查看**当前或历史**单次会话的输出（只读终端滚动） |
 | **实时现场** | 左侧菜单 `#/live` | **进行中**多路 SSH 连接同时旁路监控，支持分屏、拖拽、置顶 |
+
+<a id="field"></a>
 
 ### 现场
 
@@ -495,6 +623,8 @@ GET /api/ai/sessions/{id}/live/stream            # AI 编排现场 SSE
 GET /api/ai/sessions/{id}/live/transcript        # AI 编排持久化现场
 ```
 
+<a id="live-monitor"></a>
+
 ### 实时现场
 
 左侧菜单 **实时现场**（`#/live`）用于运维监控：列出所有进行中的 SSH 连接，多窗口同时观看，会话结束后可保留面板直至手动清除。
@@ -504,9 +634,11 @@ GET /api/live/sessions?include_finished=1
 GET /api/live/sessions/{conn_id}/stream   # SSE
 ```
 
+<a id="recording"></a>
+
 ## 会话录像、现场与回放
 
-SSH 连接建立后，服务端自动将终端 **输出** 写入 asciinema cast v2（`storage/recordings/{session_id}/`），会话结束时生成 `manifest.json`。
+SSH 连接建立后，服务端自动将终端 **输出** 写入 asciinema cast v2（`storage/recordings/Y/m/d/{session_id}/`），会话结束时生成 `manifest.json`。
 
 | 项目 | 说明 |
 |---|---|
@@ -526,6 +658,8 @@ GET /api/sessions/{id}/recording/part-001.cast
 
 > btop 等使用 `\033[?2026h` 同步刷新的 TUI，录制端会等待整帧输出后再落盘，以保证回放画面完整。
 
+<a id="auth"></a>
+
 ## 认证说明
 
 启用 `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` 后：
@@ -538,6 +672,8 @@ GET /api/sessions/{id}/recording/part-001.cast
 - 同一账号 **2FA 仅保留一个有效会话**（新验证会使旧 session 失效）
 - HTTPS 部署时设置 `COOKIE_SECURE=true`
 - 公开路径（无需 Basic Auth）：`/health`、`/login`、`/logout`、`/api/login`
+
+<a id="websocket"></a>
 
 ## WebSocket 协议
 
@@ -554,6 +690,8 @@ ws://host:port/ws?hostId=1
 3. 服务端返回 `connected`（含 `_id` 即 `conn_id`）或 `error`
 4. 交互：`input`（终端输入）、`resize`（窗口大小）
 5. 输出：`output`（base64 编码的终端数据）
+
+<a id="config"></a>
 
 ## 配置
 
@@ -590,6 +728,8 @@ BASIC_AUTH_PASSWORD=change-me
 
 全局 SSH 候选密钥见 `config/ssh.php` 的 `identity_candidates`。主机凭据经 `APP_KEY` 加密存储；私钥可存 PEM 内容或服务器路径（路径仅在服务端解析）。
 
+<a id="architecture"></a>
+
 ## 架构
 
 文字版与上图一致，便于复制到文档或终端：
@@ -617,10 +757,14 @@ Neuron Agents
   ├── SshAgent + RunSshCommandTool（终端，conn_id）
   └── OrchestratorAgent + list_hosts / run_ssh_command（编排，ai_session_id）
 
-Storage: SQLite（主机、会话、ai_sessions、审计）+ storage/recordings/ + storage/neuron/
+Storage: SQLite（主机、会话、ai_sessions、审计）+ storage/recordings/Y/m/d/ + storage/neuron/Y/m/d/
 ```
 
+> 录像与 neuron 聊天/现场文件按 **`Y/m/d` 日期子目录**落盘；旧版扁平路径（如 `recordings/{id}`、`ai-sessions/live/{id}.log`）仍可读取。
+
 中间件栈：`AccessLog` → `JsonErrorHandler` → `BasicAuthHandler` → `TwoFactorAuthHandler` → 路由。
+
+<a id="security"></a>
 
 ## 安全提示
 
@@ -634,11 +778,15 @@ Web SSH 会把 shell 暴露到浏览器，请务必：
 - AI 批准的命令等同你在服务器上执行 shell，务必审阅后再点批准
 - Docker 中 SSH 私钥挂载为只读
 
+<a id="test"></a>
+
 ## 测试
 
 ```bash
 composer test
 ```
+
+<a id="license"></a>
 
 ## 许可证
 

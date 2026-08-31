@@ -435,7 +435,7 @@ final class AiSessionChatService
             throw new ChatException('AI 会话已结束。', 409);
         }
 
-        $this->execBridge->registerSession($aiSessionId, $username);
+        $this->execBridge->registerSession($aiSessionId, $username, $session['created_at'] ?? null);
     }
 
     /**
@@ -714,8 +714,16 @@ final class AiSessionChatService
 
     private function fileHistory(int $aiSessionId): ChatFileHistory
     {
+        $createdAt = null;
+        try {
+            $session = await($this->aiSessions->findById($aiSessionId));
+            $createdAt = is_array($session) ? ($session['created_at'] ?? null) : null;
+        } catch (Throwable) {
+            $createdAt = null;
+        }
+
         return new ChatFileHistory(
-            directory: $this->settings->aiSessionStoragePath(),
+            directory: $this->settings->aiSessionStoragePaths()->chatDirectory($aiSessionId, $createdAt),
             key: (string) $aiSessionId,
             contextWindow: $this->settings->contextWindow(),
         );

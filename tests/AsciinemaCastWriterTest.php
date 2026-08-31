@@ -33,12 +33,12 @@ final class AsciinemaCastWriterTest extends TestCase
 
     public function testSyncManifestKeepsWriterOpen(): void
     {
-        $writer = new AsciinemaCastWriter($this->tmpdir, 11, 'sync-demo', 1024, 80, 24);
+        $writer = new AsciinemaCastWriter($this->tmpdir, 11, 'sync-demo', 1024, 80, 24, 'recordings/test/11');
         $writer->writeOutput('first');
 
         $sync = $writer->syncManifest();
 
-        self::assertSame('recordings/11', $sync['recording_path']);
+        self::assertSame('recordings/test/11', $sync['recording_path']);
         self::assertFileExists($this->tmpdir . '/manifest.json');
 
         $writer->writeOutput(' second');
@@ -52,7 +52,7 @@ final class AsciinemaCastWriterTest extends TestCase
 
     public function testWritesCastFileAndManifest(): void
     {
-        $writer = new AsciinemaCastWriter($this->tmpdir, 42, 'demo-host', 1024, 80, 24);
+        $writer = new AsciinemaCastWriter($this->tmpdir, 42, 'demo-host', 1024, 80, 24, 'recordings/test/42');
         $writer->writeOutput('hello');
         $writer->writeInput('ls');
         usleep(2000);
@@ -61,7 +61,7 @@ final class AsciinemaCastWriterTest extends TestCase
 
         $result = $writer->finish();
 
-        self::assertSame('recordings/42', $result['recording_path']);
+        self::assertSame('recordings/test/42', $result['recording_path']);
         self::assertCount(1, $result['parts']);
         self::assertFileExists($this->tmpdir . '/part-001.cast');
         self::assertFileExists($this->tmpdir . '/manifest.json');
@@ -97,7 +97,7 @@ final class AsciinemaCastWriterTest extends TestCase
 
     public function testRotatesPartsWhenSizeLimitReached(): void
     {
-        $writer = new AsciinemaCastWriter($this->tmpdir, 7, 'big', 120, 80, 24);
+        $writer = new AsciinemaCastWriter($this->tmpdir, 7, 'big', 120, 80, 24, 'recordings/test/7');
         $writer->writeOutput(str_repeat('x', 200));
         $writer->writeOutput(str_repeat('y', 200));
 
@@ -110,7 +110,7 @@ final class AsciinemaCastWriterTest extends TestCase
 
     public function testKeepsOpenSyncOutputInSingleEvent(): void
     {
-        $writer = new AsciinemaCastWriter($this->tmpdir, 9, 'btop', 1024 * 1024, 180, 76);
+        $writer = new AsciinemaCastWriter($this->tmpdir, 9, 'btop', 1024 * 1024, 180, 76, 'recordings/test/9');
         $writer->writeOutput("\033[?2026h" . str_repeat('x', 1000));
         $writer->writeOutput(str_repeat('y', 1000));
         $writer->writeOutput(str_repeat('z', 1000) . "\033[?2026l");

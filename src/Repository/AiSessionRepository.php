@@ -170,7 +170,7 @@ final class AiSessionRepository
         return $this->db
             ->query(
                 'SELECT s.*, h.name AS host_name, h.address AS host_address, h.port AS host_port,
-                        sess.recording_url, sess.status AS session_status, sess.duration
+                        sess.recording_url, sess.status AS session_status, sess.duration, sess.start_time
                  FROM ai_session_segments s
                  INNER JOIN hosts h ON h.id = s.host_id
                  LEFT JOIN sessions sess ON sess.id = s.session_id
@@ -195,6 +195,7 @@ final class AiSessionRepository
                         'recording_url' => $row['recording_url'] ?? null,
                         'session_status' => $row['session_status'] ?? null,
                         'duration' => isset($row['duration']) ? (int) $row['duration'] : null,
+                        'start_time' => $row['start_time'] ?? null,
                     ];
                 }, $result->resultRows ?? []);
             });

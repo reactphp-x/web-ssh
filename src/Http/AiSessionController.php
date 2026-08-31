@@ -95,7 +95,7 @@ final class AiSessionController
             return $this->fail('AI 会话不存在。', 404);
         }
         $segments = await($this->aiSessions->listSegments($id));
-        $this->execBridge->registerSession($id, $username);
+        $this->execBridge->registerSession($id, $username, $session['created_at'] ?? null);
 
         return $this->ok([
             'session' => $session,
@@ -264,6 +264,7 @@ final class AiSessionController
             return $this->fail('AI 会话不存在。', 404);
         }
 
+        $this->execBridge->registerSession($id, $username, $session['created_at'] ?? null);
         $liveKey = $this->execBridge->getActiveLiveKey($id);
 
         return $this->liveRegistry->watchAiSession(
@@ -286,6 +287,8 @@ final class AiSessionController
         if ($session === null || ($session['username'] ?? '') !== $username) {
             return $this->fail('AI 会话不存在。', 404);
         }
+
+        $this->execBridge->registerSession($id, $username, $session['created_at'] ?? null);
 
         return $this->ok([
             'ai_session_id' => $id,
@@ -312,10 +315,14 @@ final class AiSessionController
         foreach ($segments as $segment) {
             $sessionId = $segment['session_id'] ?? null;
             $recording = null;
-            if ($sessionId !== null && $this->recorder->ensureRecordingAvailable($sessionId)) {
+            if ($sessionId !== null && $this->recorder->ensureRecordingAvailable(
+                $sessionId,
+                $segment['recording_url'] ?? null,
+                $segment['start_time'] ?? null,
+            )) {
                 $recording = [
                     'session_id' => $sessionId,
-                    'recording_url' => 'recordings/' . $sessionId,
+                    'recording_url' => $segment['recording_url'] ?? ('recordings/' . $sessionId),
                     'manifest_url' => '/api/sessions/' . $sessionId . '/recording',
                 ];
             }
@@ -502,15 +509,28 @@ final class AiSessionController
                 continue;
             }
 
-            $this->recorder->ensureRecordingAvailable($sessionId);
-            $manifest = $this->recorder->readManifest($sessionId);
+            $this->recorder->ensureRecordingAvailable(
+                $sessionId,
+                $segment['recording_url'] ?? null,
+                $segment['start_time'] ?? null,
+            );
+            $manifest = $this->recorder->readManifest(
+                $sessionId,
+                $segment['recording_url'] ?? null,
+                $segment['start_time'] ?? null,
+            );
             if ($manifest === null) {
                 continue;
             }
 
             foreach ($manifest['parts'] ?? [] as $part) {
                 $name = (string) ($part['name'] ?? '');
-                $path = $this->recorder->resolvePartPath($sessionId, $name);
+                $path = $this->recorder->resolvePartPath(
+                    $sessionId,
+                    $name,
+                    $segment['recording_url'] ?? null,
+                    $segment['start_time'] ?? null,
+                );
                 if ($path === null) {
                     continue;
                 }

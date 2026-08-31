@@ -39,6 +39,7 @@ use App\Chat\StreamChunkMapper;
 use App\Chat\ThreadLock;
 use App\Middleware\FiberHandler;
 use App\Neuron\HttpClient\ReactHttpClient;
+use App\Storage\AiSessionStoragePaths;
 use App\Ssh\AiSessionLiveTranscript;
 use App\Ssh\SshExecBridge;
 use App\Ssh\SshSessionBridge;
@@ -98,7 +99,8 @@ final class WebAppFactory
         $recordingConfig = SessionRecordingConfig::load($env);
         $sessionRecorder = new SessionRecorder($recordingConfig, $sessions);
         $liveRegistry = new SshLiveRegistry();
-        $aiLiveTranscript = new AiSessionLiveTranscript($env->basePath() . '/storage/neuron/ai-sessions/live');
+        $aiSessionStoragePaths = new AiSessionStoragePaths($env->basePath() . '/storage/neuron/ai-sessions');
+        $aiLiveTranscript = new AiSessionLiveTranscript($aiSessionStoragePaths);
         $sessionBridge = new SshSessionBridge($liveRegistry, $sessionRecorder);
         $execBridge = new SshExecBridge($hostService, $hosts, $aiSessionRepo, $sessionService, $liveRegistry, $sessionRecorder, $aiLiveTranscript);
         $basicAuth = BasicAuthConfig::load($env, $loginRateLimiter)->handler();

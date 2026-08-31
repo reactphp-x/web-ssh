@@ -619,7 +619,7 @@ final class ChatService
     private function fileHistory(string $connId): ChatFileHistory
     {
         return new ChatFileHistory(
-            directory: $this->settings->storagePath(),
+            directory: $this->settings->neuronChatStoragePaths()->connChatDirectory($connId),
             key: $connId,
             contextWindow: $this->settings->contextWindow(),
         );

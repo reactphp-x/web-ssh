@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Chat;
 
+use App\Storage\AiSessionStoragePaths;
+use App\Storage\NeuronChatStoragePaths;
 use ReactphpX\Framework\Environment;
 
 final class ChatSettings
@@ -72,6 +74,16 @@ final class ChatSettings
     public function aiSessionStoragePath(): string
     {
         return $this->storagePath() . '/ai-sessions';
+    }
+
+    public function aiSessionStoragePaths(): AiSessionStoragePaths
+    {
+        return new AiSessionStoragePaths($this->aiSessionStoragePath());
+    }
+
+    public function neuronChatStoragePaths(): NeuronChatStoragePaths
+    {
+        return new NeuronChatStoragePaths($this->storagePath());
     }
 
     public function contextWindow(): int

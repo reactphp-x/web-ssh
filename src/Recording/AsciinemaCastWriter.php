@@ -51,6 +51,7 @@ final class AsciinemaCastWriter
         private readonly int $partMaxBytes,
         int $cols,
         int $rows,
+        private readonly string $recordingPathRelative,
     ) {
         $this->cols = max(1, $cols);
         $this->rows = max(1, $rows);
@@ -162,7 +163,7 @@ final class AsciinemaCastWriter
         }
 
         return [
-            'recording_path' => 'recordings/' . $this->sessionId,
+            'recording_path' => $this->recordingPathRelative,
             'parts' => $this->parts,
         ];
     }

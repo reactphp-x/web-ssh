@@ -56,7 +56,7 @@ final class SshExecBridge
         return ($this->sessions[$aiSessionId]['username'] ?? '') === $username;
     }
 
-    public function registerSession(int $aiSessionId, string $username): void
+    public function registerSession(int $aiSessionId, string $username, ?string $createdAt = null): void
     {
         if (!isset($this->sessions[$aiSessionId])) {
             $this->sessions[$aiSessionId] = [
@@ -67,6 +67,8 @@ final class SshExecBridge
                 'segments' => [],
             ];
         }
+
+        $this->liveTranscript?->rememberCreatedAt($aiSessionId, $createdAt);
     }
 
     public function getActiveLiveKey(int $aiSessionId): ?string

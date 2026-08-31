@@ -5,11 +5,15 @@ declare(strict_types=1);
 namespace App\Recording;
 
 use App\Repository\SessionRepository;
+use App\Storage\DatedStorageLayout;
 
 final class SessionRecorder
 {
     /** @var array<int, AsciinemaCastWriter> */
     private array $writers = [];
+
+    /** @var array<int, string> absolute session directories for active recordings */
+    private array $activeSessionDirs = [];
 
     public function __construct(
         private readonly SessionRecordingConfig $config,
@@ -22,13 +26,14 @@ final class SessionRecorder
         return $this->config->enabled;
     }
 
-    public function start(int $sessionId, int $cols, int $rows, string $title): void
+    public function start(int $sessionId, int $cols, int $rows, string $title, ?string $startTime = null): void
     {
         if (!$this->config->enabled || isset($this->writers[$sessionId])) {
             return;
         }
 
-        $sessionDir = $this->sessionDir($sessionId);
+        $sessionDir = DatedStorageLayout::recordingAbsoluteDir($this->config->storageDir, $sessionId, $startTime);
+        $this->activeSessionDirs[$sessionId] = $sessionDir;
         $this->writers[$sessionId] = new AsciinemaCastWriter(
             $sessionDir,
             $sessionId,
@@ -36,6 +41,7 @@ final class SessionRecorder
             $this->config->partMaxBytes,
             $cols,
             $rows,
+            DatedStorageLayout::recordingRelative($sessionId, $startTime),
         );
     }
 
@@ -80,6 +86,7 @@ final class SessionRecorder
         }
 
         unset($this->writers[$sessionId]);
+        unset($this->activeSessionDirs[$sessionId]);
 
         try {
             $result = $writer->finish();
@@ -92,47 +99,58 @@ final class SessionRecorder
             $this->sessions->setRecordingUrl($sessionId, $result['recording_path']);
         } catch (\Throwable) {
             unset($this->writers[$sessionId]);
+            unset($this->activeSessionDirs[$sessionId]);
         }
     }
 
-    public function ensureRecordingAvailable(int $sessionId): bool
+    public function ensureRecordingAvailable(int $sessionId, ?string $recordingUrl = null, ?string $startTime = null): bool
     {
         if (isset($this->writers[$sessionId])) {
             $this->syncManifest($sessionId);
         }
 
-        if ($this->readManifest($sessionId) !== null) {
-            $this->sessions->setRecordingUrl($sessionId, 'recordings/' . $sessionId);
+        if ($this->readManifest($sessionId, $recordingUrl, $startTime) !== null) {
+            $relative = $recordingUrl;
+            if ($relative === null || $relative === '') {
+                $relative = DatedStorageLayout::recordingRelative($sessionId, $startTime);
+            }
+            $this->sessions->setRecordingUrl($sessionId, $relative);
 
             return true;
         }
 
-        return $this->recoverManifestFromDisk($sessionId);
+        return $this->recoverManifestFromDisk($sessionId, $recordingUrl, $startTime);
     }
 
-    public function abort(int $sessionId): void
+    public function abort(int $sessionId, ?string $recordingUrl = null, ?string $startTime = null): void
     {
         unset($this->writers[$sessionId]);
-        $this->removeSessionDir($sessionId);
+        unset($this->activeSessionDirs[$sessionId]);
+        $this->removeSessionDir($sessionId, $recordingUrl, $startTime);
     }
 
-    public function sessionDir(int $sessionId): string
+    public function sessionDir(int $sessionId, ?string $recordingUrl = null, ?string $startTime = null): string
     {
-        return rtrim($this->config->storageDir, '/') . '/' . $sessionId;
+        return $this->resolveSessionDir($sessionId, $recordingUrl, $startTime);
     }
 
-    public function resolvePartPath(int $sessionId, string $partName): ?string
-    {
+    public function resolvePartPath(
+        int $sessionId,
+        string $partName,
+        ?string $recordingUrl = null,
+        ?string $startTime = null,
+    ): ?string {
         if (!preg_match('/^part-\d{3}\.cast$/', $partName)) {
             return null;
         }
 
-        $path = $this->sessionDir($sessionId) . '/' . $partName;
+        $sessionDir = $this->resolveSessionDir($sessionId, $recordingUrl, $startTime);
+        $path = $sessionDir . '/' . $partName;
         if (!is_readable($path)) {
             return null;
         }
 
-        $realSession = realpath($this->sessionDir($sessionId));
+        $realSession = realpath($sessionDir);
         $realFile = realpath($path);
         if ($realSession === false || $realFile === false || !str_starts_with($realFile, $realSession . DIRECTORY_SEPARATOR)) {
             return null;
@@ -141,9 +159,9 @@ final class SessionRecorder
         return $realFile;
     }
 
-    public function readManifest(int $sessionId): ?array
+    public function readManifest(int $sessionId, ?string $recordingUrl = null, ?string $startTime = null): ?array
     {
-        $path = $this->sessionDir($sessionId) . '/manifest.json';
+        $path = $this->resolveSessionDir($sessionId, $recordingUrl, $startTime) . '/manifest.json';
         if (!is_readable($path)) {
             return null;
         }
@@ -158,9 +176,28 @@ final class SessionRecorder
         return is_array($data) ? $data : null;
     }
 
-    private function recoverManifestFromDisk(int $sessionId): bool
+    private function resolveSessionDir(int $sessionId, ?string $recordingUrl = null, ?string $startTime = null): string
     {
-        $dir = $this->sessionDir($sessionId);
+        if (isset($this->activeSessionDirs[$sessionId])) {
+            return $this->activeSessionDirs[$sessionId];
+        }
+
+        $existing = DatedStorageLayout::resolveExistingRecordingDir(
+            $this->config->storageDir,
+            $sessionId,
+            $recordingUrl,
+            $startTime,
+        );
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        return DatedStorageLayout::recordingAbsoluteDir($this->config->storageDir, $sessionId, $startTime);
+    }
+
+    private function recoverManifestFromDisk(int $sessionId, ?string $recordingUrl = null, ?string $startTime = null): bool
+    {
+        $dir = $this->resolveSessionDir($sessionId, $recordingUrl, $startTime);
         $files = glob($dir . '/part-*.cast') ?: [];
         if ($files === []) {
             return false;
@@ -204,14 +241,18 @@ final class SessionRecorder
             return false;
         }
 
-        $this->sessions->setRecordingUrl($sessionId, 'recordings/' . $sessionId);
+        $relative = $recordingUrl;
+        if ($relative === null || $relative === '') {
+            $relative = DatedStorageLayout::recordingRelative($sessionId, $startTime);
+        }
+        $this->sessions->setRecordingUrl($sessionId, $relative);
 
         return true;
     }
 
-    private function removeSessionDir(int $sessionId): void
+    private function removeSessionDir(int $sessionId, ?string $recordingUrl = null, ?string $startTime = null): void
     {
-        $dir = $this->sessionDir($sessionId);
+        $dir = $this->resolveSessionDir($sessionId, $recordingUrl, $startTime);
         if (!is_dir($dir)) {
             return;
         }

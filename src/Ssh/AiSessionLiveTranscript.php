@@ -4,11 +4,23 @@ declare(strict_types=1);
 
 namespace App\Ssh;
 
+use App\Storage\AiSessionStoragePaths;
+
 final class AiSessionLiveTranscript
 {
+    /** @var array<int, string|null> */
+    private array $createdAtCache = [];
+
     public function __construct(
-        private readonly string $directory,
+        private readonly AiSessionStoragePaths $paths,
     ) {
+    }
+
+    public function rememberCreatedAt(int $aiSessionId, ?string $createdAt): void
+    {
+        if ($createdAt !== null && $createdAt !== '') {
+            $this->createdAtCache[$aiSessionId] = $createdAt;
+        }
     }
 
     public function append(int $aiSessionId, string $data): void
@@ -18,7 +30,7 @@ final class AiSessionLiveTranscript
         }
 
         $path = $this->path($aiSessionId);
-        $this->ensureDirectory();
+        $this->paths->ensureLiveLogDirectory($aiSessionId, $this->createdAt($aiSessionId));
         file_put_contents($path, $data, FILE_APPEND | LOCK_EX);
     }
 
@@ -48,21 +60,17 @@ final class AiSessionLiveTranscript
             return;
         }
 
-        $this->ensureDirectory();
+        $this->paths->ensureLiveLogDirectory($aiSessionId, $this->createdAt($aiSessionId));
         file_put_contents($this->path($aiSessionId), $data, LOCK_EX);
     }
 
     private function path(int $aiSessionId): string
     {
-        return $this->directory . '/' . $aiSessionId . '.log';
+        return $this->paths->liveLogPath($aiSessionId, $this->createdAt($aiSessionId));
     }
 
-    private function ensureDirectory(): void
+    private function createdAt(int $aiSessionId): ?string
     {
-        if (is_dir($this->directory)) {
-            return;
-        }
-
-        mkdir($this->directory, 0755, true);
+        return $this->createdAtCache[$aiSessionId] ?? null;
     }
 }

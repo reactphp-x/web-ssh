@@ -30,11 +30,19 @@ final class RecordingController
                     return JsonResponse::error('该会话没有可用的回放录像。', 404);
                 }
 
-                if (!$this->recorder->ensureRecordingAvailable($sessionId) && empty($session['recording_url'])) {
+                if (!$this->recorder->ensureRecordingAvailable(
+                    $sessionId,
+                    $session['recording_url'] ?? null,
+                    $session['start_time'] ?? null,
+                ) && empty($session['recording_url'])) {
                     return JsonResponse::error('该会话没有可用的回放录像。', 404);
                 }
 
-                $manifest = $this->recorder->readManifest($sessionId);
+                $manifest = $this->recorder->readManifest(
+                    $sessionId,
+                    $session['recording_url'] ?? null,
+                    $session['start_time'] ?? null,
+                );
                 if ($manifest === null) {
                     return JsonResponse::error('回放清单不存在或已损坏。', 404);
                 }
@@ -66,11 +74,20 @@ final class RecordingController
                     return JsonResponse::error('该会话没有可用的回放录像。', 404);
                 }
 
-                if (!$this->recorder->ensureRecordingAvailable($sessionId) && empty($session['recording_url'])) {
+                if (!$this->recorder->ensureRecordingAvailable(
+                    $sessionId,
+                    $session['recording_url'] ?? null,
+                    $session['start_time'] ?? null,
+                ) && empty($session['recording_url'])) {
                     return JsonResponse::error('该会话没有可用的回放录像。', 404);
                 }
 
-                $path = $this->recorder->resolvePartPath($sessionId, $partName);
+                $path = $this->recorder->resolvePartPath(
+                    $sessionId,
+                    $partName,
+                    $session['recording_url'] ?? null,
+                    $session['start_time'] ?? null,
+                );
                 if ($path === null) {
                     return JsonResponse::error('回放分片不存在。', 404);
                 }
