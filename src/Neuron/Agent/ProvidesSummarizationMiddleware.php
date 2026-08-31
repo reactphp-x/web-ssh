@@ -12,18 +12,17 @@ use NeuronAI\Agent\Nodes\StructuredOutputNode;
 
 trait ProvidesSummarizationMiddleware
 {
-    /**
-     * @return array<class-string, list<Summarization>>
-     */
-    protected function summarizationMiddlewareEntries(ChatSettings $settings): array
+    private bool $summarizationMiddlewareRegistered = false;
+
+    protected function registerSummarizationMiddleware(ChatSettings $settings): void
     {
-        if (!$settings->summarizationEnabled()) {
-            return [];
+        if ($this->summarizationMiddlewareRegistered || !$settings->summarizationEnabled()) {
+            return;
         }
 
         $maxTokens = $settings->summarizationMaxTokens();
         if ($maxTokens <= 0) {
-            return [];
+            return;
         }
 
         $summarization = new Summarization(
@@ -33,10 +32,10 @@ trait ProvidesSummarizationMiddleware
             summaryPrompt: $settings->summarizationPrompt(),
         );
 
-        return [
-            ChatNode::class => [$summarization],
-            StreamingNode::class => [$summarization],
-            StructuredOutputNode::class => [$summarization],
-        ];
+        foreach ([ChatNode::class, StreamingNode::class, StructuredOutputNode::class] as $nodeClass) {
+            $this->addMiddleware($nodeClass, $summarization);
+        }
+
+        $this->summarizationMiddlewareRegistered = true;
     }
 }

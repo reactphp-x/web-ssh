@@ -2515,6 +2515,7 @@ const appOptions = {
                     if (!data) return;
                     const callId = data.callId || null;
                     if (data.phase === 'call') {
+                        commitStreamingAssistants();
                         const entry = {
                             kind: 'tool',
                             key: callId || `tmp-${Date.now()}-${messages.value.length}`,
@@ -2674,6 +2675,25 @@ const appOptions = {
                 };
                 let abortController = null;
                 let scrollRaf = 0;
+                let assistantMessageSeq = 0;
+
+                const commitStreamingAssistants = () => {
+                    for (const msg of messages.value) {
+                        if (msg.kind === 'message' && msg.role === 'assistant' && msg.streaming) {
+                            msg.streaming = false;
+                        }
+                    }
+                };
+
+                const findLastStreamingAssistant = () => {
+                    for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+                        const msg = messages.value[i];
+                        if (msg?.kind === 'message' && msg.role === 'assistant' && msg.streaming) {
+                            return msg;
+                        }
+                    }
+                    return null;
+                };
 
                 const scrollToBottom = async () => {
                     await nextTick();
@@ -2761,6 +2781,7 @@ const appOptions = {
                 };
 
                 const appendAssistantDelta = (text) => {
+                    if (!text) return;
                     const last = messages.value[messages.value.length - 1];
                     if (last && last.kind === 'message' && last.role === 'assistant' && last.streaming) {
                         last.content += text;
@@ -2768,9 +2789,12 @@ const appOptions = {
                         scrollToBottom();
                         return;
                     }
+                    commitStreamingAssistants();
+                    assistantMessageSeq += 1;
                     messages.value.push({
                         kind: 'message',
                         role: 'assistant',
+                        key: `assistant-${assistantMessageSeq}`,
                         content: text,
                         html: text.replace(/\n/g, '<br>'),
                         streaming: true,
@@ -2779,19 +2803,35 @@ const appOptions = {
                 };
 
                 const finalizeAssistant = (payload) => {
-                    const last = messages.value[messages.value.length - 1];
-                    if (last && last.kind === 'message' && last.role === 'assistant' && last.streaming) {
-                        last.streaming = false;
-                        if (payload?.html) last.html = payload.html;
-                        if (payload?.content) last.content = payload.content;
-                    } else if (payload?.content) {
-                        messages.value.push({
-                            kind: 'message',
-                            role: 'assistant',
-                            content: payload.content,
-                            html: payload.html || payload.content.replace(/\n/g, '<br>'),
-                            streaming: false,
-                        });
+                    const streaming = findLastStreamingAssistant();
+                    if (streaming) {
+                        streaming.streaming = false;
+                        const local = String(streaming.content || '').trim();
+                        const remote = String(payload?.content || '').trim();
+                        if (remote && (!local || remote.length >= local.length)) {
+                            streaming.html = payload.html || streaming.html;
+                            streaming.content = payload.content || streaming.content;
+                        }
+                    } else if (payload?.content?.trim()) {
+                        const tail = payload.content.trim();
+                        const alreadyShown = messages.value.some(
+                            (msg) => msg.kind === 'message'
+                                && msg.role === 'assistant'
+                                && String(msg.content || '').trim() === tail,
+                        );
+                        if (!alreadyShown) {
+                            assistantMessageSeq += 1;
+                            messages.value.push({
+                                kind: 'message',
+                                role: 'assistant',
+                                key: `assistant-${assistantMessageSeq}`,
+                                content: payload.content,
+                                html: payload.html || payload.content.replace(/\n/g, '<br>'),
+                                streaming: false,
+                            });
+                        }
+                    } else {
+                        commitStreamingAssistants();
                     }
                     if (payload?.approval && (payload.approval.actions?.length ?? 0) > 0) {
                         approval.value = payload.approval;
@@ -2862,8 +2902,7 @@ const appOptions = {
                     } finally {
                         busy.value = false;
                         busyText.value = '';
-                        const last = messages.value[messages.value.length - 1];
-                        if (last?.kind === 'message' && last.streaming) last.streaming = false;
+                        commitStreamingAssistants();
                         await scrollToBottom();
                     }
                 };

@@ -50,6 +50,7 @@ final class SshAgent extends Agent
         $this->bridge = $bridge;
         $this->connId = $connId;
         $this->allowFeedback = $allowFeedback;
+        $this->registerSummarizationMiddleware($settings);
 
         return $this;
     }
@@ -124,12 +125,9 @@ final class SshAgent extends Agent
             $toolNode[] = new UserFeedback();
         }
 
-        return array_merge(
-            $this->summarizationMiddlewareEntries($this->requireSettings()),
-            [
-                ToolNode::class => $toolNode,
-            ],
-        );
+        return [
+            ToolNode::class => $toolNode,
+        ];
     }
 
     protected function tools(): array

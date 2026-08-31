@@ -60,6 +60,7 @@ final class OrchestratorAgent extends Agent
         $this->aiSessionId = $aiSessionId;
         $this->username = $username;
         $this->allowFeedback = $allowFeedback;
+        $this->registerSummarizationMiddleware($settings);
 
         return $this;
     }
@@ -134,12 +135,9 @@ final class OrchestratorAgent extends Agent
             $toolNode[] = new UserFeedback();
         }
 
-        return array_merge(
-            $this->summarizationMiddlewareEntries($this->requireSettings()),
-            [
-                ToolNode::class => $toolNode,
-            ],
-        );
+        return [
+            ToolNode::class => $toolNode,
+        ];
     }
 
     protected function tools(): array
