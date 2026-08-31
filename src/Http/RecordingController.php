@@ -26,7 +26,11 @@ final class RecordingController
         return $this->sessions
             ->findById($sessionId)
             ->then(function (?array $session) use ($sessionId): ResponseInterface {
-                if ($session === null || empty($session['recording_url'])) {
+                if ($session === null) {
+                    return JsonResponse::error('该会话没有可用的回放录像。', 404);
+                }
+
+                if (!$this->recorder->ensureRecordingAvailable($sessionId) && empty($session['recording_url'])) {
                     return JsonResponse::error('该会话没有可用的回放录像。', 404);
                 }
 
@@ -58,7 +62,11 @@ final class RecordingController
         return $this->sessions
             ->findById($sessionId)
             ->then(function (?array $session) use ($sessionId, $partName): ResponseInterface {
-                if ($session === null || empty($session['recording_url'])) {
+                if ($session === null) {
+                    return JsonResponse::error('该会话没有可用的回放录像。', 404);
+                }
+
+                if (!$this->recorder->ensureRecordingAvailable($sessionId) && empty($session['recording_url'])) {
                     return JsonResponse::error('该会话没有可用的回放录像。', 404);
                 }
 

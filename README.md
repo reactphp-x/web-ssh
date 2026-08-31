@@ -242,6 +242,26 @@ docker compose up --build
 
 SSH 连接成功后，终端页右侧出现 **AI 助手** 侧栏（移动端为「终端 | AI 助手」标签切换）。从 **主机管理** 点击 **AI 助手** 进入**同一终端页**，默认左侧为 **实时现场**，右侧为 AI 对话；可在**左侧顶部**切换为 **交互终端** 并手动输入。
 
+### 独立 AI 编排（跨主机）
+
+侧边栏 **AI 编排**（`#/ai`）提供不绑定单主机的编排会话：
+
+- **一个会话 = 一个聊天 thread**（`ai_session_id`），可在多台主机间切换执行
+- AI 通过 `list_hosts` 自动选机，`run_ssh_command(host_id, …)` 需人工批准
+- 左侧 **实时现场** 显示当前分段输出；切换主机时新开 **segment**（独立录像）
+- **历史会话**（`#/ai/sessions`）可继续对话；回放通过分段 manifest 顺序播放
+
+与终端页 AI 并存：终端 AI 绑定 `conn_id`（单主机 PTY）；编排 AI 绑定 `ai_session_id`（exec 通道，无需先打开终端）。
+
+```text
+GET  /api/ai/sessions
+POST /api/ai/sessions
+GET  /api/ai/sessions/{id}/bootstrap
+POST /api/ai/sessions/{id}/chat/stream
+GET  /api/ai/sessions/{id}/live/stream
+GET  /api/ai/sessions/{id}/recording
+```
+
 ### 工作流程
 
 1. 在底部输入框描述任务（如「查看磁盘使用并清理 /tmp」）

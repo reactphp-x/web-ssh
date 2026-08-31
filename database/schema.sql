@@ -37,10 +37,44 @@ CREATE TABLE IF NOT EXISTS hosts (
 CREATE INDEX IF NOT EXISTS idx_hosts_group_id ON hosts (group_id);
 CREATE INDEX IF NOT EXISTS idx_hosts_address ON hosts (address);
 
+CREATE TABLE IF NOT EXISTS ai_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    active_segment_id INTEGER NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ended_at TEXT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_sessions_username ON ai_sessions (username);
+CREATE INDEX IF NOT EXISTS idx_ai_sessions_status ON ai_sessions (status);
+CREATE INDEX IF NOT EXISTS idx_ai_sessions_created_at ON ai_sessions (created_at);
+
+CREATE TABLE IF NOT EXISTS ai_session_segments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ai_session_id INTEGER NOT NULL,
+    host_id INTEGER NOT NULL,
+    session_id INTEGER NULL,
+    live_key TEXT NOT NULL,
+    order_index INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ended_at TEXT NULL,
+    FOREIGN KEY (ai_session_id) REFERENCES ai_sessions (id) ON DELETE CASCADE,
+    FOREIGN KEY (host_id) REFERENCES hosts (id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_session_segments_ai_session_id ON ai_session_segments (ai_session_id);
+CREATE INDEX IF NOT EXISTS idx_ai_session_segments_host_id ON ai_session_segments (host_id);
+
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL,
     host_id INTEGER NOT NULL,
+    session_type TEXT NOT NULL DEFAULT 'terminal',
+    ai_session_id INTEGER NULL,
     status TEXT NOT NULL,
     error_message TEXT NULL,
     start_time TEXT NOT NULL,
@@ -48,12 +82,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     duration INTEGER NULL,
     recording_url TEXT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (host_id) REFERENCES hosts (id) ON DELETE CASCADE
+    FOREIGN KEY (host_id) REFERENCES hosts (id) ON DELETE CASCADE,
+    FOREIGN KEY (ai_session_id) REFERENCES ai_sessions (id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions (username);
 CREATE INDEX IF NOT EXISTS idx_sessions_host_id ON sessions (host_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions (start_time);
+CREATE INDEX IF NOT EXISTS idx_sessions_ai_session_id ON sessions (ai_session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_session_type ON sessions (session_type);
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

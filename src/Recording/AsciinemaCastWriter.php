@@ -113,12 +113,36 @@ final class AsciinemaCastWriter
     /**
      * @return array{recording_path: string, parts: list<array{name: string, bytes: int, events: int}>}
      */
+    /**
+     * Flush pending output and refresh manifest.json without closing the cast writer.
+     *
+     * @return array{recording_path: string, parts: list<array{name: string, bytes: int, events: int}>}
+     */
+    public function syncManifest(): array
+    {
+        $this->cancelFlushTimer();
+        $this->flushOutputBuffer(force: true);
+
+        return $this->writeManifestFile();
+    }
+
+    /**
+     * @return array{recording_path: string, parts: list<array{name: string, bytes: int, events: int}>}
+     */
     public function finish(): array
     {
         $this->cancelFlushTimer();
         $this->flushOutputBuffer(force: true);
         $this->closePart();
 
+        return $this->writeManifestFile();
+    }
+
+    /**
+     * @return array{recording_path: string, parts: list<array{name: string, bytes: int, events: int}>}
+     */
+    private function writeManifestFile(): array
+    {
         $manifest = [
             'version' => 1,
             'session_id' => $this->sessionId,

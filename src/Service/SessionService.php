@@ -13,9 +13,13 @@ final class SessionService
     {
     }
 
-    public function start(string $username, int $hostId): PromiseInterface
-    {
-        return $this->sessions->create($username, $hostId, 'pending');
+    public function start(
+        string $username,
+        int $hostId,
+        string $sessionType = 'terminal',
+        ?int $aiSessionId = null,
+    ): PromiseInterface {
+        return $this->sessions->create($username, $hostId, 'pending', null, $sessionType, $aiSessionId);
     }
 
     public function markSuccess(int $sessionId): PromiseInterface

@@ -69,6 +69,11 @@ final class ChatSettings
         return $this->storagePath() . '/workflows';
     }
 
+    public function aiSessionStoragePath(): string
+    {
+        return $this->storagePath() . '/ai-sessions';
+    }
+
     public function contextWindow(): int
     {
         return max(1000, $this->environment->int('NEURON_CHAT_CONTEXT_WINDOW', 50000));

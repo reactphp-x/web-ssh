@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Ssh;
 
+use App\Http\Sse;
 use Psr\Http\Message\ResponseInterface;
+use React\EventLoop\Loop;
 use React\Http\Message\Response;
 use React\Stream\ThroughStream;
 
@@ -27,14 +29,49 @@ final class SshLiveRegistry
      * }> */
     private array $live = [];
 
+    /** @var array<int, list<ThroughStream>> */
+    private array $aiSessionIdleWatchers = [];
+
     /**
      * @param array<string, mixed> $host
      */
     public function registerPending(string $connId, string $platformUser, int $hostId, array $host): void
     {
+        $this->registerEntry($connId, $platformUser, $hostId, $host, null);
+    }
+
+    /**
+     * @param array<string, mixed> $host
+     */
+    public function registerAiSegment(
+        string $liveKey,
+        string $platformUser,
+        int $hostId,
+        array $host,
+        int $sessionId,
+        int $aiSessionId,
+        int $segmentId,
+    ): void {
+        $this->registerEntry($liveKey, $platformUser, $hostId, $host, $sessionId, $aiSessionId, $segmentId);
+    }
+
+    /**
+     * @param array<string, mixed> $host
+     */
+    private function registerEntry(
+        string $connId,
+        string $platformUser,
+        int $hostId,
+        array $host,
+        ?int $sessionId,
+        ?int $aiSessionId = null,
+        ?int $segmentId = null,
+    ): void {
         $this->live[$connId] = [
             'conn_id' => $connId,
-            'session_id' => null,
+            'session_id' => $sessionId,
+            'ai_session_id' => $aiSessionId,
+            'segment_id' => $segmentId,
             'platform_user' => $platformUser,
             'host_id' => $hostId,
             'host_name' => (string) ($host['name'] ?? ''),
@@ -48,13 +85,31 @@ final class SshLiveRegistry
             'hub' => new SshOutputHub(),
         ];
 
-        $this->live[$connId]['hub']->write('start', [
+        $payload = [
             'conn_id' => $connId,
             'host_name' => $this->live[$connId]['host_name'],
             'host_address' => $this->live[$connId]['host_address'],
             'ssh_user' => $this->live[$connId]['ssh_user'],
             'platform_user' => $platformUser,
-        ]);
+        ];
+        if ($aiSessionId !== null) {
+            $payload['ai_session_id'] = $aiSessionId;
+            $payload['segment_id'] = $segmentId;
+            $this->promoteAiSessionIdleWatchers($aiSessionId, $connId);
+        }
+        $this->live[$connId]['hub']->write('start', $payload);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    public function writeAiSegmentSwitch(string $liveKey, array $payload): void
+    {
+        if (!isset($this->live[$liveKey])) {
+            return;
+        }
+
+        $this->live[$liveKey]['hub']->write('segment_switch', $payload);
     }
 
     public function markSessionStarted(string $connId, int $sessionId): void
@@ -217,7 +272,105 @@ final class SshLiveRegistry
         $stream = new ThroughStream();
         $entry['hub']->attach($stream, true, 'joined running SSH session');
 
-        return \App\Http\Sse::response($stream);
+        return Sse::response($stream);
+    }
+
+    public function watchAiSession(
+        int $aiSessionId,
+        ?string $activeLiveKey,
+        string $transcript = '',
+        ?array $activeSegment = null,
+    ): ResponseInterface {
+        $stream = new ThroughStream();
+
+        Loop::futureTick(function () use ($stream, $aiSessionId, $activeLiveKey, $transcript, $activeSegment): void {
+            if (!$stream->isWritable()) {
+                return;
+            }
+
+            if ($transcript !== '') {
+                Sse::write($stream, 'replay', [
+                    'chunk' => base64_encode($transcript),
+                    'host_name' => $activeSegment['host_name'] ?? '',
+                    'host_address' => $activeSegment['host_address'] ?? '',
+                    'host_id' => $activeSegment['host_id'] ?? null,
+                ]);
+            }
+
+            if ($activeLiveKey !== null && isset($this->live[$activeLiveKey]) && !$this->live[$activeLiveKey]['hub']->isClosed()) {
+                $entry = $this->live[$activeLiveKey];
+                Sse::write($stream, 'connected', [
+                    'host_id' => $activeSegment['host_id'] ?? null,
+                    'host_name' => $activeSegment['host_name'] ?? $entry['host_name'],
+                    'host_address' => $activeSegment['host_address'] ?? $entry['host_address'],
+                ]);
+                $entry['hub']->attach($stream, false);
+
+                return;
+            }
+
+            if ($activeSegment !== null) {
+                Sse::write($stream, 'segment_switch', $activeSegment);
+            }
+
+            Sse::write($stream, 'status', [
+                'state' => 'idle',
+                'message' => $transcript !== ''
+                    ? '已恢复历史输出，等待下一次命令…'
+                    : '等待命令执行，AI 审核通过后将在此显示输出。',
+            ]);
+
+            $this->aiSessionIdleWatchers[$aiSessionId][] = $stream;
+
+            $keepalive = Loop::addPeriodicTimer(15.0, static function () use ($stream): void {
+                if ($stream->isWritable()) {
+                    $stream->write(": keepalive\n\n");
+                }
+            });
+
+            $stream->on('close', function () use ($stream, $aiSessionId, $keepalive): void {
+                Loop::cancelTimer($keepalive);
+                $this->removeAiSessionIdleWatcher($aiSessionId, $stream);
+            });
+        });
+
+        return Sse::response($stream);
+    }
+
+    private function openAiSessionIdleStream(int $aiSessionId): ResponseInterface
+    {
+        return $this->watchAiSession($aiSessionId, null, '', null);
+    }
+
+    private function promoteAiSessionIdleWatchers(int $aiSessionId, string $liveKey): void
+    {
+        $watchers = $this->aiSessionIdleWatchers[$aiSessionId] ?? [];
+        unset($this->aiSessionIdleWatchers[$aiSessionId]);
+        if ($watchers === [] || !isset($this->live[$liveKey])) {
+            return;
+        }
+
+        foreach ($watchers as $sse) {
+            if (!$sse->isWritable()) {
+                continue;
+            }
+            $this->live[$liveKey]['hub']->attach($sse, false);
+        }
+    }
+
+    private function removeAiSessionIdleWatcher(int $aiSessionId, ThroughStream $stream): void
+    {
+        if (!isset($this->aiSessionIdleWatchers[$aiSessionId])) {
+            return;
+        }
+
+        $this->aiSessionIdleWatchers[$aiSessionId] = array_values(array_filter(
+            $this->aiSessionIdleWatchers[$aiSessionId],
+            static fn (ThroughStream $subscriber): bool => $subscriber !== $stream,
+        ));
+        if ($this->aiSessionIdleWatchers[$aiSessionId] === []) {
+            unset($this->aiSessionIdleWatchers[$aiSessionId]);
+        }
     }
 
     /**

@@ -18,12 +18,14 @@ final class SessionRepository
         int $hostId,
         string $status,
         ?string $errorMessage = null,
+        string $sessionType = 'terminal',
+        ?int $aiSessionId = null,
     ): PromiseInterface {
         return $this->db
             ->query(
-                'INSERT INTO sessions (username, host_id, status, error_message, start_time)
-                 VALUES (?, ?, ?, ?, datetime(\'now\'))',
-                [$username, $hostId, $status, $errorMessage],
+                'INSERT INTO sessions (username, host_id, session_type, ai_session_id, status, error_message, start_time)
+                 VALUES (?, ?, ?, ?, ?, ?, datetime(\'now\'))',
+                [$username, $hostId, $sessionType, $aiSessionId, $status, $errorMessage],
             )
             ->then(fn ($result): int => (int) $result->insertId);
     }
@@ -115,6 +117,8 @@ final class SessionRepository
                                 'id' => (int) $row['id'],
                                 'username' => (string) $row['username'],
                                 'host_id' => (int) $row['host_id'],
+                                'session_type' => (string) ($row['session_type'] ?? 'terminal'),
+                                'ai_session_id' => isset($row['ai_session_id']) ? (int) $row['ai_session_id'] : null,
                                 'host_name' => (string) $row['host_name'],
                                 'host_address' => (string) $row['host_address'],
                                 'status' => (string) $row['status'],
@@ -152,6 +156,8 @@ final class SessionRepository
                     'id' => (int) $row['id'],
                     'username' => (string) $row['username'],
                     'host_id' => (int) $row['host_id'],
+                    'session_type' => (string) ($row['session_type'] ?? 'terminal'),
+                    'ai_session_id' => isset($row['ai_session_id']) ? (int) $row['ai_session_id'] : null,
                     'host_name' => (string) $row['host_name'],
                     'host_address' => (string) $row['host_address'],
                     'host_port' => (int) $row['host_port'],

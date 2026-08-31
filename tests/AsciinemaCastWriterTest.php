@@ -31,6 +31,25 @@ final class AsciinemaCastWriterTest extends TestCase
         rmdir($this->tmpdir);
     }
 
+    public function testSyncManifestKeepsWriterOpen(): void
+    {
+        $writer = new AsciinemaCastWriter($this->tmpdir, 11, 'sync-demo', 1024, 80, 24);
+        $writer->writeOutput('first');
+
+        $sync = $writer->syncManifest();
+
+        self::assertSame('recordings/11', $sync['recording_path']);
+        self::assertFileExists($this->tmpdir . '/manifest.json');
+
+        $writer->writeOutput(' second');
+        $result = $writer->finish();
+
+        self::assertCount(1, $result['parts']);
+        $cast = implode("\n", file($this->tmpdir . '/part-001.cast', FILE_IGNORE_NEW_LINES));
+        self::assertStringContainsString('first', $cast);
+        self::assertStringContainsString(' second', $cast);
+    }
+
     public function testWritesCastFileAndManifest(): void
     {
         $writer = new AsciinemaCastWriter($this->tmpdir, 42, 'demo-host', 1024, 80, 24);

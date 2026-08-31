@@ -58,6 +58,7 @@ final class DatabaseMigrator
             $database->exec('PRAGMA foreign_keys = ON');
             $this->upgradeHostsTable($database);
             $this->upgradeTwoFactorTables($database);
+            $this->upgradeAiSessionTables($database);
 
             foreach ($statements as $statement) {
                 $database->exec($statement);
@@ -126,6 +127,66 @@ final class DatabaseMigrator
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )',
         );
+    }
+
+    private function upgradeAiSessionTables(\SQLite3 $database): void
+    {
+        $database->exec(
+            'CREATE TABLE IF NOT EXISTS ai_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT \'\',
+                username TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT \'active\',
+                active_segment_id INTEGER NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ended_at TEXT NULL
+            )',
+        );
+        $database->exec('CREATE INDEX IF NOT EXISTS idx_ai_sessions_username ON ai_sessions (username)');
+        $database->exec('CREATE INDEX IF NOT EXISTS idx_ai_sessions_status ON ai_sessions (status)');
+        $database->exec('CREATE INDEX IF NOT EXISTS idx_ai_sessions_created_at ON ai_sessions (created_at)');
+
+        $database->exec(
+            'CREATE TABLE IF NOT EXISTS ai_session_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ai_session_id INTEGER NOT NULL,
+                host_id INTEGER NOT NULL,
+                session_id INTEGER NULL,
+                live_key TEXT NOT NULL,
+                order_index INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ended_at TEXT NULL,
+                FOREIGN KEY (ai_session_id) REFERENCES ai_sessions (id) ON DELETE CASCADE,
+                FOREIGN KEY (host_id) REFERENCES hosts (id) ON DELETE CASCADE,
+                FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL
+            )',
+        );
+        $database->exec('CREATE INDEX IF NOT EXISTS idx_ai_session_segments_ai_session_id ON ai_session_segments (ai_session_id)');
+        $database->exec('CREATE INDEX IF NOT EXISTS idx_ai_session_segments_host_id ON ai_session_segments (host_id)');
+
+        $hasSessions = $database->querySingle(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions' LIMIT 1",
+        );
+        if ($hasSessions !== 1) {
+            return;
+        }
+
+        $result = $database->query('PRAGMA table_info(sessions)');
+        $columns = [];
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+            $columns[] = (string) ($row['name'] ?? '');
+        }
+
+        if (!in_array('session_type', $columns, true)) {
+            $database->exec("ALTER TABLE sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'terminal'");
+        }
+        if (!in_array('ai_session_id', $columns, true)) {
+            $database->exec('ALTER TABLE sessions ADD COLUMN ai_session_id INTEGER NULL');
+        }
+
+        $database->exec('CREATE INDEX IF NOT EXISTS idx_sessions_ai_session_id ON sessions (ai_session_id)');
+        $database->exec('CREATE INDEX IF NOT EXISTS idx_sessions_session_type ON sessions (session_type)');
     }
 
     /**

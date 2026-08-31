@@ -6,12 +6,16 @@ namespace App\Chat;
 
 use App\Neuron\HttpClient\HttpStreamScope;
 use App\Neuron\HttpClient\ReactHttpClient;
-use App\Neuron\SshAgent;
-use App\Neuron\Tools\RunSshCommandTool;
+use App\Neuron\OrchestratorAgent;
+use App\Neuron\Tools\GetCommandContextTool;
+use App\Neuron\Tools\ListHostsTool;
+use App\Neuron\Tools\OrchestratorRunSshCommandTool;
 use App\Neuron\Workflow\FeedbackField;
 use App\Neuron\Workflow\FeedbackRequest;
-use App\Ssh\SshSessionBridge;
-use App\Ssh\SshToolContext;
+use App\Repository\AiSessionRepository;
+use App\Repository\HostRepository;
+use App\Ssh\OrchestratorToolContext;
+use App\Ssh\SshExecBridge;
 use NeuronAI\Chat\Enums\MessageRole;
 use NeuronAI\Chat\Messages\ToolCallMessage;
 use NeuronAI\Chat\Messages\ToolResultMessage;
@@ -24,11 +28,15 @@ use NeuronAI\Workflow\Persistence\FilePersistence;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
-final class ChatService
+use function React\Async\await;
+
+final class AiSessionChatService
 {
     public function __construct(
         private readonly ChatSettings $settings,
-        private readonly SshSessionBridge $bridge,
+        private readonly SshExecBridge $execBridge,
+        private readonly HostRepository $hosts,
+        private readonly AiSessionRepository $aiSessions,
         private readonly HttpClientInterface $httpClient,
         private readonly StreamChunkMapper $chunks,
         private readonly ChatStreamSession $streamSession,
@@ -36,29 +44,37 @@ final class ChatService
     ) {
     }
 
-    public function lockKey(string $username, string $connId): string
+    public function lockKey(string $username, int $aiSessionId): string
     {
-        return sha1($username . ':' . $connId);
+        return sha1($username . ':ai_session:' . $aiSessionId);
+    }
+
+    private function threadKey(int $aiSessionId): string
+    {
+        return (string) $aiSessionId;
     }
 
     /**
      * @return array<string, mixed>
      */
-    public function bootstrap(string $username, string $connId): array
+    public function bootstrap(string $username, int $aiSessionId): array
     {
+        $this->assertAiSessionAccess($username, $aiSessionId);
         $this->ensureDirectories();
-        $lockKey = $this->lockKey($username, $connId);
+        $key = $this->threadKey($aiSessionId);
+        $lockKey = $this->lockKey($username, $aiSessionId);
 
         return [
             'configured' => $this->settings->isConfigured(),
             'enabled' => $this->settings->isEnabled(),
             'model' => $this->settings->model(),
-            'thread_key' => $connId,
-            'messages' => $this->loadMessages($connId),
-            'tool_calls' => $this->loadToolCalls($connId),
-            'timeline' => $this->loadTimeline($connId),
-            'approval' => $this->loadApproval($connId),
-            'feedback' => $this->loadFeedback($connId),
+            'thread_key' => $key,
+            'ai_session_id' => $aiSessionId,
+            'messages' => $this->loadMessages($aiSessionId),
+            'tool_calls' => $this->loadToolCalls($aiSessionId),
+            'timeline' => $this->loadTimeline($aiSessionId),
+            'approval' => $this->loadApproval($aiSessionId),
+            'feedback' => $this->loadFeedback($aiSessionId),
             'generation' => $this->streamSession->getMeta($lockKey),
         ];
     }
@@ -69,18 +85,19 @@ final class ChatService
      */
     public function stream(
         string $username,
-        string $connId,
+        int $aiSessionId,
         string $message,
         callable $emit,
         ?HttpStreamScope $scope = null,
     ): array {
         $message = trim($message);
+        $key = $this->threadKey($aiSessionId);
         $emit('start', [
-            'thread_key' => $connId,
+            'thread_key' => $key,
             'user_html' => $this->toHtml($message),
         ]);
 
-        return $this->invoke($username, $connId, $message, null, $emit, $scope);
+        return $this->invoke($username, $aiSessionId, $message, null, $emit, $scope);
     }
 
     /**
@@ -89,13 +106,13 @@ final class ChatService
      */
     public function resumeApproval(
         string $username,
-        string $connId,
+        int $aiSessionId,
         bool $approved,
         ?string $feedback = null,
         ?callable $emit = null,
         ?HttpStreamScope $scope = null,
     ): array {
-        $token = $this->workflowResumeToken($connId);
+        $token = $this->workflowResumeToken($aiSessionId);
         $request = $this->loadApprovalRequest($token);
         if ($request === null) {
             throw new ChatException('没有待审核的操作。');
@@ -115,12 +132,12 @@ final class ChatService
         $userLabel = $approved ? '批准' : '拒绝';
         if ($emit) {
             $emit('start', [
-                'thread_key' => $connId,
+                'thread_key' => $this->threadKey($aiSessionId),
                 'user_html' => $this->toHtml($userLabel),
             ]);
         }
 
-        return $this->invoke($username, $connId, $userLabel, $request, $emit, $scope);
+        return $this->invoke($username, $aiSessionId, $userLabel, $request, $emit, $scope);
     }
 
     /**
@@ -130,12 +147,12 @@ final class ChatService
      */
     public function resumeFeedback(
         string $username,
-        string $connId,
+        int $aiSessionId,
         array $answers,
         ?callable $emit = null,
         ?HttpStreamScope $scope = null,
     ): array {
-        $token = $this->workflowResumeToken($connId);
+        $token = $this->workflowResumeToken($aiSessionId);
         $request = $this->loadFeedbackRequest($token);
         if ($request === null) {
             throw new ChatException('没有待回答的问题。');
@@ -160,12 +177,12 @@ final class ChatService
 
         if ($emit) {
             $emit('start', [
-                'thread_key' => $connId,
+                'thread_key' => $this->threadKey($aiSessionId),
                 'user_html' => $this->toHtml($userLabel),
             ]);
         }
 
-        return $this->invoke($username, $connId, $userLabel, $request, $emit, $scope);
+        return $this->invoke($username, $aiSessionId, $userLabel, $request, $emit, $scope);
     }
 
     /**
@@ -174,11 +191,11 @@ final class ChatService
      */
     public function skipFeedback(
         string $username,
-        string $connId,
+        int $aiSessionId,
         ?callable $emit = null,
         ?HttpStreamScope $scope = null,
     ): array {
-        $token = $this->workflowResumeToken($connId);
+        $token = $this->workflowResumeToken($aiSessionId);
         $request = $this->loadFeedbackRequest($token);
         if ($request === null) {
             throw new ChatException('没有待回答的问题。');
@@ -191,60 +208,60 @@ final class ChatService
         $userLabel = '已跳过反馈';
         if ($emit) {
             $emit('start', [
-                'thread_key' => $connId,
+                'thread_key' => $this->threadKey($aiSessionId),
                 'user_html' => $this->toHtml($userLabel),
             ]);
         }
 
-        return $this->invoke($username, $connId, $userLabel, $request, $emit, $scope);
+        return $this->invoke($username, $aiSessionId, $userLabel, $request, $emit, $scope);
     }
 
-    public function reset(string $connId): string
+    public function reset(int $aiSessionId): string
     {
-        $directory = $this->settings->storagePath();
+        $directory = $this->settings->aiSessionStoragePath();
         if (is_dir($directory)) {
-            foreach (glob($directory . DIRECTORY_SEPARATOR . '*' . $connId . '*') ?: [] as $file) {
+            foreach (glob($directory . DIRECTORY_SEPARATOR . '*' . $aiSessionId . '*') ?: [] as $file) {
                 @unlink($file);
             }
         }
         try {
-            $this->workflowPersistence()->delete($this->workflowResumeToken($connId));
+            $this->workflowPersistence()->delete($this->workflowResumeToken($aiSessionId));
         } catch (Throwable) {
         }
 
-        return $connId . '-' . time();
+        return $this->threadKey($aiSessionId) . '-' . time();
     }
 
     /**
      * @return array<string, mixed>|null
      */
-    public function loadApproval(string $connId): ?array
+    public function loadApproval(int $aiSessionId): ?array
     {
-        $request = $this->loadApprovalRequest($this->workflowResumeToken($connId));
+        $request = $this->loadApprovalRequest($this->workflowResumeToken($aiSessionId));
         if ($request === null || $request->getPendingActions() === []) {
             return null;
         }
 
-        return $this->serializeApprovalRequest($request, $this->workflowResumeToken($connId));
+        return $this->serializeApprovalRequest($request, $this->workflowResumeToken($aiSessionId));
     }
 
     /**
      * @return array<string, mixed>|null
      */
-    public function loadFeedback(string $connId): ?array
+    public function loadFeedback(int $aiSessionId): ?array
     {
-        $request = $this->loadFeedbackRequest($this->workflowResumeToken($connId));
+        $request = $this->loadFeedbackRequest($this->workflowResumeToken($aiSessionId));
         if ($request === null || $request->getPendingFields() === []) {
             return null;
         }
 
-        return $this->serializeFeedbackRequest($request, $this->workflowResumeToken($connId));
+        return $this->serializeFeedbackRequest($request, $this->workflowResumeToken($aiSessionId));
     }
 
-    public function repairIncompleteToolCalls(string $connId): void
+    public function repairIncompleteToolCalls(int $aiSessionId): void
     {
         try {
-            $this->fileHistory($connId)->repairIncompleteToolCalls(true);
+            $this->fileHistory($aiSessionId)->repairIncompleteToolCalls(true);
         } catch (Throwable) {
         }
     }
@@ -255,32 +272,32 @@ final class ChatService
      */
     private function invoke(
         string $username,
-        string $connId,
+        int $aiSessionId,
         string $userMessage,
         ?InterruptRequest $resume,
         ?callable $emit,
         ?HttpStreamScope $scope,
     ): array {
-        $this->assertSessionAccess($username, $connId);
+        $this->assertAiSessionAccess($username, $aiSessionId);
 
         $userMessage = trim($userMessage);
         if ($resume === null && $userMessage === '') {
             throw new ChatException('请输入要说的话');
         }
 
-        if ($resume === null && $this->loadApproval($connId) !== null) {
-            $pending = $this->loadApproval($connId);
+        if ($resume === null && $this->loadApproval($aiSessionId) !== null) {
+            $pending = $this->loadApproval($aiSessionId);
             throw new ChatException('有待审核的命令，请先批准或拒绝。', data: [
                 'approval' => $pending,
-                'thread_key' => $connId,
+                'thread_key' => $this->threadKey($aiSessionId),
             ]);
         }
 
-        if ($resume === null && $this->loadFeedback($connId) !== null) {
-            $pending = $this->loadFeedback($connId);
+        if ($resume === null && $this->loadFeedback($aiSessionId) !== null) {
+            $pending = $this->loadFeedback($aiSessionId);
             throw new ChatException('有待回答的问题，可先提交、跳过反馈，或填写后提交。', data: [
                 'feedback' => $pending,
-                'thread_key' => $connId,
+                'thread_key' => $this->threadKey($aiSessionId),
             ]);
         }
 
@@ -292,11 +309,11 @@ final class ChatService
         }
 
         $this->ensureDirectories();
-        $this->fileHistory($connId)->repairIncompleteToolCalls($resume === null);
+        $this->fileHistory($aiSessionId)->repairIncompleteToolCalls($resume === null);
 
-        $agent = $this->makeAgent($connId, $scope);
+        $agent = $this->makeAgent($aiSessionId, $username, $scope);
         $assembled = '';
-        $lockKey = $this->lockKey($username, $connId);
+        $lockKey = $this->lockKey($username, $aiSessionId);
 
         try {
             if ($emit !== null) {
@@ -335,12 +352,12 @@ final class ChatService
         } catch (ChatStopException) {
             $content = trim($assembled);
 
-            return array_merge($this->payload($content, $userMessage, $connId, null, null), ['stopped' => true]);
+            return array_merge($this->payload($content, $userMessage, $aiSessionId, null, null), ['stopped' => true]);
         } catch (WorkflowInterrupt $interrupt) {
-            return $this->formatInterrupt($interrupt, $connId, $userMessage, $emit, trim($assembled));
+            return $this->formatInterrupt($interrupt, $aiSessionId, $userMessage, $emit, trim($assembled));
         } catch (Throwable $e) {
-            $this->logger->error('ssh ai chat failed', [
-                'conn_id' => $connId,
+            $this->logger->error('ai session chat failed', [
+                'ai_session_id' => $aiSessionId,
                 'username' => $username,
                 'exception' => $e::class,
                 'message' => $e->getMessage(),
@@ -353,7 +370,7 @@ final class ChatService
 
         $content = $content !== '' ? $content : trim($assembled);
 
-        return $this->payload($content, $userMessage, $connId, null, null);
+        return $this->payload($content, $userMessage, $aiSessionId, null, null);
     }
 
     /**
@@ -362,7 +379,7 @@ final class ChatService
      */
     private function formatInterrupt(
         WorkflowInterrupt $interrupt,
-        string $connId,
+        int $aiSessionId,
         string $userMessage,
         ?callable $emit,
         string $partialContent = '',
@@ -375,7 +392,7 @@ final class ChatService
                 $emit('feedback', $feedback);
             }
 
-            return $this->payload($content, $userMessage, $connId, null, $feedback);
+            return $this->payload($content, $userMessage, $aiSessionId, null, $feedback);
         }
 
         if (!$request instanceof ApprovalRequest) {
@@ -388,7 +405,7 @@ final class ChatService
             $emit('approval', $approval);
         }
 
-        return $this->payload($content, $userMessage, $connId, $approval, null);
+        return $this->payload($content, $userMessage, $aiSessionId, $approval, null);
     }
 
     private function interruptContent(string $partialContent, string $hint): string
@@ -405,14 +422,20 @@ final class ChatService
         return trim($partialContent . "\n\n" . $hint);
     }
 
-    private function assertSessionAccess(string $username, string $connId): void
+    private function assertAiSessionAccess(string $username, int $aiSessionId): void
     {
-        if (!$this->bridge->isConnected($connId)) {
-            throw new ChatException('SSH 会话未连接，无法使用 AI 助手。');
+        $session = await($this->aiSessions->findById($aiSessionId));
+        if ($session === null) {
+            throw new ChatException('AI 会话不存在。', 404);
         }
-        if (!$this->bridge->isOwnedBy($connId, $username)) {
-            throw new ChatException('无权访问该 SSH 会话。', 403);
+        if (($session['username'] ?? '') !== $username) {
+            throw new ChatException('无权访问该 AI 会话。', 403);
         }
+        if (($session['status'] ?? '') !== 'active') {
+            throw new ChatException('AI 会话已结束。', 409);
+        }
+
+        $this->execBridge->registerSession($aiSessionId, $username);
     }
 
     /**
@@ -426,13 +449,15 @@ final class ChatService
                 continue;
             }
             $label = $this->toolLabel($action->name);
-            $description = $this->prettyJson((string) $action->description);
+            $rawDescription = (string) $action->description;
+            $enriched = $this->enrichActionDescription($action->name, $rawDescription);
             $actions[] = [
                 'id' => $action->id,
                 'name' => $action->name,
                 'label' => $label,
-                'description' => $description,
-                'detail' => $this->actionDetail($label, $description),
+                'description' => $enriched['description'],
+                'host' => $enriched['host'],
+                'detail' => $this->actionDetail($label, $enriched['description']),
             ];
         }
 
@@ -547,9 +572,10 @@ final class ChatService
     private function toolLabel(string $name): string
     {
         return match ($name) {
-            RunSshCommandTool::NAME => '执行 SSH 命令',
+            OrchestratorRunSshCommandTool::NAME => '执行 SSH 命令',
             'ask_user' => '向用户提问',
-            'get_terminal_context' => '读取终端输出',
+            ListHostsTool::NAME => '列出主机',
+            GetCommandContextTool::NAME => '读取命令输出',
             default => $name,
         };
     }
@@ -562,6 +588,69 @@ final class ChatService
         }
 
         return implode("\n", $lines);
+    }
+
+    /**
+     * @return array{description: string, host: ?array{id: int, name: string, address: string, label: string}}
+     */
+    private function enrichActionDescription(string $name, string $description): array
+    {
+        $pretty = $this->prettyJson($description);
+        if ($name !== OrchestratorRunSshCommandTool::NAME) {
+            return ['description' => $pretty, 'host' => null];
+        }
+
+        $decoded = json_decode(trim($description), true);
+        if (!is_array($decoded)) {
+            return ['description' => $pretty, 'host' => null];
+        }
+
+        $hostId = (int) ($decoded['host_id'] ?? 0);
+        $host = $hostId > 0 ? await($this->hosts->findById($hostId)) : null;
+        $hostName = (string) ($host['name'] ?? '');
+        $hostAddress = (string) ($host['address'] ?? '');
+        $hostLabel = $this->formatHostLabel($hostName, $hostAddress, $hostId);
+
+        $lines = [];
+        if ($hostLabel !== '') {
+            $lines[] = '目标主机：' . $hostLabel;
+        }
+        $reason = trim((string) ($decoded['reason'] ?? ''));
+        if ($reason !== '') {
+            $lines[] = '原因：' . $reason;
+        }
+        $command = trim((string) ($decoded['command'] ?? ''));
+        if ($command !== '') {
+            $lines[] = '命令：';
+            $lines[] = $command;
+        }
+
+        $enriched = trim(implode("\n", $lines));
+
+        return [
+            'description' => $enriched !== '' ? $enriched : $pretty,
+            'host' => $hostId > 0 ? [
+                'id' => $hostId,
+                'name' => $hostName,
+                'address' => $hostAddress,
+                'label' => $hostLabel,
+            ] : null,
+        ];
+    }
+
+    private function formatHostLabel(string $name, string $address, int $hostId): string
+    {
+        if ($name !== '' && $address !== '' && $name !== $address) {
+            return $name . ' · ' . $address . ' (#' . $hostId . ')';
+        }
+        if ($name !== '') {
+            return $name . ' (#' . $hostId . ')';
+        }
+        if ($address !== '') {
+            return $address . ' (#' . $hostId . ')';
+        }
+
+        return $hostId > 0 ? ('主机 #' . $hostId) : '';
     }
 
     private function prettyJson(string $text): string
@@ -585,7 +674,7 @@ final class ChatService
     private function payload(
         string $content,
         string $userMessage,
-        string $connId,
+        int $aiSessionId,
         ?array $approval,
         ?array $feedback,
     ): array {
@@ -593,34 +682,41 @@ final class ChatService
             'content' => $content,
             'html' => $this->toHtml($content),
             'user_html' => $this->toHtml($userMessage),
-            'thread_key' => $connId,
+            'thread_key' => $this->threadKey($aiSessionId),
+            'ai_session_id' => $aiSessionId,
             'approval' => $approval,
             'feedback' => $feedback,
         ];
     }
 
-    private function makeAgent(string $connId, ?HttpStreamScope $scope): SshAgent
+    private function makeAgent(int $aiSessionId, string $username, ?HttpStreamScope $scope): OrchestratorAgent
     {
-        SshToolContext::configure($this->bridge, $this->settings->commandTimeout());
+        OrchestratorToolContext::configure(
+            $this->execBridge,
+            $this->hosts,
+            $aiSessionId,
+            $username,
+            $this->settings->commandTimeout(),
+        );
 
         $http = $this->httpClient;
         if ($scope !== null && $http instanceof ReactHttpClient) {
             $http = $http->withHttpStreamScope($scope);
         }
 
-        $agent = SshAgent::make($this->workflowPersistence(), $this->workflowResumeToken($connId));
-        $agent->configure($this->settings, $http, $this->bridge, $connId, true);
+        $agent = OrchestratorAgent::make($this->workflowPersistence(), $this->workflowResumeToken($aiSessionId));
+        $agent->configure($this->settings, $http, $this->execBridge, $this->hosts, $aiSessionId, $username, true);
         $agent->toolMaxRuns($this->settings->toolMaxRuns());
-        $agent->setChatHistory($this->fileHistory($connId));
+        $agent->setChatHistory($this->fileHistory($aiSessionId));
 
         return $agent;
     }
 
-    private function fileHistory(string $connId): ChatFileHistory
+    private function fileHistory(int $aiSessionId): ChatFileHistory
     {
         return new ChatFileHistory(
-            directory: $this->settings->storagePath(),
-            key: $connId,
+            directory: $this->settings->aiSessionStoragePath(),
+            key: (string) $aiSessionId,
             contextWindow: $this->settings->contextWindow(),
         );
     }
@@ -632,9 +728,9 @@ final class ChatService
         return new FilePersistence($this->settings->workflowPath());
     }
 
-    private function workflowResumeToken(string $connId): string
+    private function workflowResumeToken(int $aiSessionId): string
     {
-        return 'ssh-ai-' . sha1($connId);
+        return 'orchestrator-ai-' . sha1((string) $aiSessionId);
     }
 
     private function loadApprovalRequest(string $token): ?ApprovalRequest
@@ -662,10 +758,10 @@ final class ChatService
     /**
      * @return list<array{role: string, content: string, html: string}>
      */
-    private function loadMessages(string $connId): array
+    private function loadMessages(int $aiSessionId): array
     {
         try {
-            $history = $this->fileHistory($connId);
+            $history = $this->fileHistory($aiSessionId);
         } catch (Throwable) {
             return [];
         }
@@ -693,10 +789,10 @@ final class ChatService
     /**
      * @return list<array<string, mixed>>
      */
-    private function loadToolCalls(string $connId): array
+    private function loadToolCalls(int $aiSessionId): array
     {
         try {
-            $history = $this->fileHistory($connId);
+            $history = $this->fileHistory($aiSessionId);
         } catch (Throwable) {
             return [];
         }
@@ -738,10 +834,10 @@ final class ChatService
     /**
      * @return list<array<string, mixed>>
      */
-    private function loadTimeline(string $connId): array
+    private function loadTimeline(int $aiSessionId): array
     {
         try {
-            $history = $this->fileHistory($connId);
+            $history = $this->fileHistory($aiSessionId);
         } catch (Throwable) {
             return [];
         }
@@ -812,7 +908,7 @@ final class ChatService
 
     private function ensureDirectories(): void
     {
-        foreach ([$this->settings->storagePath(), $this->settings->workflowPath()] as $directory) {
+        foreach ([$this->settings->aiSessionStoragePath(), $this->settings->workflowPath()] as $directory) {
             if (!is_dir($directory)) {
                 mkdir($directory, 0755, true);
             }

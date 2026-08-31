@@ -29,12 +29,39 @@ const api = {
 const parseRoute = () => {
     const hash = location.hash.replace(/^#/, '') || '/hosts';
     const parts = hash.split('/').filter(Boolean);
-    if (parts[0] === 'ai' && parts[1]) {
+    if (parts[0] === 'ai' && parts[1] === 'sessions') {
         return {
-            name: 'terminal',
-            id: Number(parts[1]),
-            nonce: parts[2] || String(Date.now()),
-            mode: 'ai',
+            name: 'ai-sessions',
+            id: null,
+            nonce: null,
+            mode: null,
+        };
+    }
+    if (parts[0] === 'ai' && parts[1] === 'session' && parts[2]) {
+        return {
+            name: 'ai-session',
+            id: Number(parts[2]),
+            nonce: null,
+            mode: 'session',
+        };
+    }
+    if (parts[0] === 'ai' && parts[1] && parts[1] !== 'session' && parts[1] !== 'sessions') {
+        const hostId = Number(parts[1]);
+        if (!Number.isNaN(hostId) && hostId > 0) {
+            return {
+                name: 'terminal',
+                id: hostId,
+                nonce: parts[2] || String(Date.now()),
+                mode: 'ai',
+            };
+        }
+    }
+    if (parts[0] === 'ai') {
+        return {
+            name: 'ai-home',
+            id: null,
+            nonce: null,
+            mode: null,
         };
     }
     return {
@@ -43,6 +70,14 @@ const parseRoute = () => {
         nonce: parts[2] || null,
         mode: parts[3] === 'ai' ? 'ai' : 'terminal',
     };
+};
+
+const openAiOrchestrator = () => {
+    location.hash = '#/ai';
+};
+
+const openAiSession = (sessionId) => {
+    location.hash = '#/ai/session/' + sessionId;
 };
 
 const openTerminalTab = (hostId) => {
@@ -55,6 +90,860 @@ const openAiAssistant = (hostId) => {
 
 const navigate = (path) => {
     location.hash = path;
+};
+
+const parseToolJson = (value) => {
+    if (value == null || value === '') {
+        return null;
+    }
+    if (typeof value === 'object') {
+        return value;
+    }
+    if (typeof value === 'string') {
+        try {
+            return JSON.parse(value);
+        } catch {
+            return value;
+        }
+    }
+    return value;
+};
+
+const TOOL_KIND_META = {
+    list_hosts: { badge: '主机', tone: 'info' },
+    run_ssh_command: { badge: '命令', tone: 'command' },
+    ask_user: { badge: '提问', tone: 'question' },
+    get_command_context: { badge: '上下文', tone: 'info' },
+    get_terminal_context: { badge: '终端', tone: 'info' },
+};
+
+const findQuestionOptionLabel = (question, value) => {
+    const options = question?.options || [];
+    const hit = options.find((opt) => String(opt.value) === String(value));
+    return hit?.label || String(value);
+};
+
+const resolveAskUserAnswers = (inputs, resultObj) => {
+    if (!resultObj || typeof resultObj !== 'object') {
+        return [];
+    }
+    const rows = [];
+    for (const question of inputs?.questions || []) {
+        const raw = resultObj[question.id];
+        if (raw == null || raw === '') {
+            continue;
+        }
+        let answer;
+        if (Array.isArray(raw)) {
+            answer = raw.map((value) => findQuestionOptionLabel(question, value)).join('、');
+        } else {
+            answer = findQuestionOptionLabel(question, raw);
+        }
+        rows.push({ question: question.label || question.id, answer });
+    }
+    return rows;
+};
+
+const formatHostRef = (hostId, hostMap = null) => {
+    const id = Number(hostId);
+    if (!(id > 0)) {
+        return '';
+    }
+    const host = hostMap?.[id];
+    if (host) {
+        const name = String(host.name || '').trim();
+        const address = String(host.address || '').trim();
+        if (name && address && name !== address) {
+            return `${name} · ${address} (#${id})`;
+        }
+        if (name) {
+            return `${name} (#${id})`;
+        }
+        if (address) {
+            return `${address} (#${id})`;
+        }
+    }
+    return `主机 #${id}`;
+};
+
+const buildHostMapFromTimeline = (items) => {
+    const map = {};
+    for (const item of items || []) {
+        if (item?.kind !== 'tool' || item.name !== 'list_hosts' || item.status !== 'done') {
+            continue;
+        }
+        const parsed = parseToolJson(item.result);
+        for (const host of parsed?.hosts || []) {
+            const id = Number(host.id);
+            if (id > 0) {
+                map[id] = host;
+            }
+        }
+    }
+    return map;
+};
+
+const truncateToolText = (text, max = 1200) => {
+    const value = String(text || '');
+    if (value.length <= max) {
+        return { text: value, truncated: false };
+    }
+    return { text: value.slice(0, max) + '\n…（输出已截断）', truncated: true };
+};
+
+const formatToolJson = (value) => {
+    const parsed = parseToolJson(value);
+    if (parsed == null || parsed === '') {
+        return '';
+    }
+    if (typeof parsed === 'string') {
+        return parsed;
+    }
+    try {
+        return JSON.stringify(parsed, null, 2);
+    } catch {
+        return String(parsed);
+    }
+};
+
+const formatToolPresentation = (item, hostMap = null) => {
+    const name = item?.name || '';
+    const inputs = item?.inputs || {};
+    const running = item?.status === 'running';
+    const parsed = parseToolJson(item?.result);
+    const meta = TOOL_KIND_META[name] || { badge: '工具', tone: 'neutral' };
+    const blocks = [];
+    let summary = '';
+
+    switch (name) {
+        case 'list_hosts':
+            if (running) {
+                summary = '正在读取平台主机列表…';
+                break;
+            }
+            if (parsed && typeof parsed === 'object' && Array.isArray(parsed.hosts)) {
+                const count = parsed.count ?? parsed.hosts.length;
+                summary = `找到 ${count} 台主机`;
+                blocks.push({
+                    kind: 'hosts',
+                    hosts: parsed.hosts.map((host) => ({
+                        id: host.id,
+                        label: host.name && host.address && host.name !== host.address
+                            ? `${host.name} · ${host.address}`
+                            : (host.name || host.address || `#${host.id}`),
+                        meta: [
+                            host.username ? `@${host.username}` : '',
+                            host.port && Number(host.port) !== 22 ? `:${host.port}` : '',
+                        ].filter(Boolean).join(' '),
+                    })),
+                });
+            } else if (typeof parsed === 'string' && parsed.trim()) {
+                summary = parsed.trim();
+            }
+            break;
+
+        case 'run_ssh_command': {
+            const hostId = inputs.host_id ?? parsed?.host_id;
+            const command = inputs.command || parsed?.command || '';
+            const reason = inputs.reason || parsed?.reason || '';
+            if (hostId) {
+                blocks.push({ kind: 'text', title: '目标主机', content: formatHostRef(hostId, hostMap) });
+            }
+            if (reason) {
+                blocks.push({ kind: 'text', title: '说明', content: reason });
+            }
+            if (command) {
+                blocks.push({ kind: 'code', title: '命令', content: command });
+            }
+            if (running) {
+                summary = command ? `正在执行：${command}` : '等待执行 SSH 命令…';
+                break;
+            }
+            if (parsed && typeof parsed === 'object') {
+                if (parsed.timed_out) {
+                    summary = '命令超时（已返回部分输出）';
+                } else if (parsed.exit_code === 0) {
+                    summary = '命令执行成功';
+                } else if (parsed.exit_code != null) {
+                    summary = `命令结束，退出码 ${parsed.exit_code}`;
+                } else {
+                    summary = parsed.ok === false ? '命令执行失败' : '命令已执行';
+                }
+                if (parsed.output) {
+                    const output = truncateToolText(parsed.output, 1200);
+                    blocks.push({
+                        kind: 'code',
+                        title: '输出',
+                        content: output.text,
+                        muted: output.truncated,
+                    });
+                }
+            }
+            break;
+        }
+
+        case 'ask_user': {
+            const message = inputs.message || '';
+            if (message) {
+                summary = message;
+            } else if (running) {
+                summary = '等待用户回答…';
+            }
+            const questions = inputs.questions || [];
+            if (questions.length) {
+                blocks.push({
+                    kind: 'questions',
+                    title: running ? '问题' : '已向用户提问',
+                    questions: questions.map((question) => ({
+                        label: question.label || question.id,
+                        options: (question.options || []).map((opt) => opt.label || opt.value),
+                    })),
+                });
+            }
+            if (!running && parsed && typeof parsed === 'object') {
+                const answers = resolveAskUserAnswers(inputs, parsed);
+                if (answers.length) {
+                    blocks.push({ kind: 'answers', title: '用户回答', answers });
+                    if (!summary) {
+                        summary = '用户已回答';
+                    }
+                }
+            }
+            break;
+        }
+
+        case 'get_command_context':
+        case 'get_terminal_context': {
+            const hostId = inputs.host_id;
+            if (hostId) {
+                blocks.push({ kind: 'text', title: '目标主机', content: formatHostRef(hostId, hostMap) });
+            }
+            if (running) {
+                summary = '正在读取最近输出…';
+                break;
+            }
+            const outputText = typeof parsed === 'string'
+                ? parsed
+                : (parsed?.output || parsed?.context || '');
+            if (String(outputText).trim()) {
+                const output = truncateToolText(outputText, 800);
+                blocks.push({ kind: 'code', title: '最近输出', content: output.text, muted: output.truncated });
+                summary = name === 'get_terminal_context' ? '已读取终端上下文' : '已读取命令上下文';
+            } else {
+                summary = '暂无可用输出';
+            }
+            break;
+        }
+
+        default:
+            summary = running ? '工具执行中…' : '';
+            break;
+    }
+
+    const known = Object.prototype.hasOwnProperty.call(TOOL_KIND_META, name);
+    const showRaw = !known || (blocks.length === 0 && !running);
+
+    return {
+        badge: meta.badge,
+        tone: meta.tone,
+        summary,
+        blocks,
+        showRaw,
+        running,
+    };
+};
+
+const AiToolCallCard = {
+    props: {
+        item: { type: Object, required: true },
+        hostMap: { type: Object, default: null },
+        compact: { type: Boolean, default: false },
+    },
+    setup(props) {
+        const expanded = ref(false);
+        const presentation = computed(() => formatToolPresentation(props.item, props.hostMap || null));
+        const hasDetails = computed(() => (
+            presentation.value.blocks.length > 0 || presentation.value.showRaw
+        ));
+
+        watch(
+            () => props.item?.key || props.item?.callId || props.item?.name,
+            () => {
+                expanded.value = false;
+            },
+        );
+
+        const toggleExpanded = () => {
+            if (hasDetails.value) {
+                expanded.value = !expanded.value;
+            }
+        };
+
+        return {
+            expanded,
+            presentation,
+            hasDetails,
+            toggleExpanded,
+            formatToolJson,
+        };
+    },
+    template: `
+        <div
+            class="ai-tool-card"
+            :class="[
+                'ai-tool-tone-' + presentation.tone,
+                {
+                    compact,
+                    expanded,
+                    collapsible: hasDetails,
+                },
+            ]"
+        >
+            <button
+                type="button"
+                class="ai-tool-toggle"
+                :class="{ 'is-static': !hasDetails }"
+                :aria-expanded="hasDetails ? expanded : undefined"
+                @click="toggleExpanded"
+            >
+                <div class="ai-tool-call-head">
+                    <div class="ai-tool-head-main">
+                        <span class="ai-tool-kind-badge">{{ presentation.badge }}</span>
+                        <strong>{{ item.label || item.name || '工具' }}</strong>
+                    </div>
+                    <div class="ai-tool-head-side">
+                        <span class="ai-tool-call-status" :class="item.status">{{ item.status === 'running' ? '执行中' : '已完成' }}</span>
+                        <span v-if="hasDetails" class="ai-tool-chevron" aria-hidden="true">{{ expanded ? '▾' : '▸' }}</span>
+                    </div>
+                </div>
+                <p v-if="presentation.summary" class="ai-tool-summary">{{ presentation.summary }}</p>
+            </button>
+            <div v-if="expanded && hasDetails" class="ai-tool-body">
+                <div v-for="(block, blockIdx) in presentation.blocks" :key="blockIdx" class="ai-tool-call-block">
+                    <div v-if="block.title" class="ai-tool-call-label">{{ block.title }}</div>
+                    <div v-if="block.kind === 'text'" class="ai-tool-text">{{ block.content }}</div>
+                    <pre v-else-if="block.kind === 'code'" class="ai-tool-code" :class="{ muted: block.muted }">{{ block.content }}</pre>
+                    <ul v-else-if="block.kind === 'hosts'" class="ai-tool-host-list">
+                        <li v-for="host in block.hosts" :key="host.id" class="ai-tool-host-item">
+                            <span class="ai-tool-host-name">{{ host.label }}</span>
+                            <span v-if="host.meta" class="ai-tool-host-meta">{{ host.meta }}</span>
+                            <span class="ai-tool-host-id">#{{ host.id }}</span>
+                        </li>
+                    </ul>
+                    <div v-else-if="block.kind === 'questions'" class="ai-tool-questions">
+                        <div v-for="(question, qi) in block.questions" :key="qi" class="ai-tool-question">
+                            <div class="ai-tool-question-label">{{ question.label }}</div>
+                            <div v-if="question.options.length" class="ai-tool-option-list">
+                                <span v-for="(option, oi) in question.options" :key="oi" class="ai-tool-option-chip">{{ option }}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-else-if="block.kind === 'answers'" class="ai-tool-answers">
+                        <div v-for="(row, ri) in block.answers" :key="ri" class="ai-tool-answer-row">
+                            <span class="ai-tool-answer-q">{{ row.question }}</span>
+                            <span class="ai-tool-answer-a">{{ row.answer }}</span>
+                        </div>
+                    </div>
+                </div>
+                <details v-if="presentation.showRaw" class="ai-tool-raw">
+                    <summary>查看原始数据</summary>
+                    <div v-if="Object.keys(item.inputs || {}).length" class="ai-tool-call-block">
+                        <div class="ai-tool-call-label">参数</div>
+                        <pre>{{ formatToolJson(item.inputs) }}</pre>
+                    </div>
+                    <div v-if="item.result != null && item.result !== ''" class="ai-tool-call-block">
+                        <div class="ai-tool-call-label">结果</div>
+                        <pre>{{ formatToolJson(item.result) }}</pre>
+                    </div>
+                </details>
+            </div>
+        </div>
+    `,
+};
+
+const formatReplayHostLabel = (item) => {
+    const name = String(item?.host_name || '').trim();
+    const addr = String(item?.host_address || '').trim();
+    if (name && addr && name !== addr) {
+        return name + ' (' + addr + ')';
+    }
+    return name || addr || (item?.host_id ? ('主机 #' + item.host_id) : '');
+};
+
+const parseCastTerminalOutput = (castText) => {
+    const lines = String(castText || '').trim().split('\n');
+    let output = '';
+    for (let i = 2; i < lines.length; i++) {
+        try {
+            const row = JSON.parse(lines[i]);
+            if (Array.isArray(row) && row.length >= 3 && row[1] === 'o') {
+                output += row[2];
+            }
+        } catch (_) {
+            // skip malformed cast lines
+        }
+    }
+    return output;
+};
+
+const createAsciinemaReplay = () => {
+    const replayOpen = ref(false);
+    const replayTitle = ref('');
+    const replayMeta = ref('');
+    const replayHostLabel = ref('');
+    const replaySegmentInfo = ref('');
+    const replayLoading = ref(false);
+    const replayError = ref('');
+    const replayHost = ref(null);
+    let replayPlayer = null;
+    let replayAbort = false;
+
+    const disposePlayer = () => {
+        if (replayPlayer) {
+            try {
+                replayPlayer.dispose();
+            } catch (_) {}
+            replayPlayer = null;
+        }
+    };
+
+    const closeReplay = () => {
+        replayAbort = true;
+        disposePlayer();
+        replayOpen.value = false;
+        replayLoading.value = false;
+        replayError.value = '';
+        replayHostLabel.value = '';
+        replaySegmentInfo.value = '';
+    };
+
+    const fetchCastDurationSec = async (url) => {
+        try {
+            const res = await fetch(url, { credentials: 'same-origin' });
+            if (!res.ok) {
+                return 0;
+            }
+            const text = await res.text();
+            const lines = text.trim().split('\n');
+            let last = 0;
+            for (let i = 2; i < lines.length; i++) {
+                try {
+                    const row = JSON.parse(lines[i]);
+                    if (Array.isArray(row) && typeof row[0] === 'number') {
+                        last = Math.max(last, row[0]);
+                    }
+                } catch (_) {
+                    // skip malformed cast lines
+                }
+            }
+            return last;
+        } catch (_) {
+            return 0;
+        }
+    };
+
+    const waitForPlaybackEnd = (player, durationHint = 0) => new Promise((resolve, reject) => {
+        let settled = false;
+        let pollTimer = null;
+        let fallbackTimer = null;
+
+        const cleanup = () => {
+            player.removeEventListener('ended', onEnded);
+            player.removeEventListener('playing', onPlaying);
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+            if (fallbackTimer) {
+                clearTimeout(fallbackTimer);
+                fallbackTimer = null;
+            }
+        };
+
+        const finish = () => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            cleanup();
+            resolve();
+        };
+
+        const fail = (err) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            cleanup();
+            reject(err);
+        };
+
+        const scheduleFallback = (seconds) => {
+            if (fallbackTimer || !(seconds > 0)) {
+                return;
+            }
+            fallbackTimer = setTimeout(finish, Math.ceil((seconds + 1.5) * 1000));
+        };
+
+        const onEnded = () => finish();
+        const onPlaying = () => {
+            const dur = player.getDuration?.();
+            if (typeof dur === 'number' && dur > 0) {
+                scheduleFallback(dur);
+            }
+        };
+
+        player.addEventListener('ended', onEnded);
+        player.addEventListener('playing', onPlaying);
+
+        pollTimer = setInterval(() => {
+            try {
+                const dur = player.getDuration?.();
+                const cur = player.getCurrentTime?.();
+                if (typeof dur === 'number' && dur > 0 && typeof cur === 'number' && cur >= dur - 0.15) {
+                    finish();
+                }
+            } catch (_) {
+                // ignore polling errors
+            }
+        }, 200);
+
+        scheduleFallback(durationHint);
+        setTimeout(finish, 600000);
+
+        const playResult = player.play?.();
+        if (playResult && typeof playResult.then === 'function') {
+            playResult.catch(fail);
+        }
+    });
+
+    const playCastUrl = async (url, manifest, statusLabel) => {
+        if (replayAbort) {
+            return;
+        }
+        if (!replayHost.value || typeof AsciinemaPlayer === 'undefined') {
+            throw new Error('回放组件未加载');
+        }
+
+        const durationHint = await fetchCastDurationSec(url);
+
+        disposePlayer();
+        await nextTick();
+        if (replayAbort || !replayHost.value) {
+            return;
+        }
+
+        replayMeta.value = statusLabel + ' · 播放中';
+        replayPlayer = AsciinemaPlayer.create(url, replayHost.value, {
+            cols: manifest.cols || 80,
+            rows: manifest.rows || 40,
+            autoPlay: true,
+            preload: true,
+            speed: 1,
+            fit: 'both',
+            theme: 'asciinema',
+            controls: true,
+            idleTimeLimit: 86400,
+        });
+
+        await waitForPlaybackEnd(replayPlayer, durationHint);
+    };
+
+    const playRecordingParts = async (parts, manifest, segmentLabel = '') => {
+        for (let index = 0; index < parts.length; index++) {
+            if (replayAbort) {
+                return;
+            }
+            const partLabel = parts.length > 1
+                ? ('分片 ' + (index + 1) + ' / ' + parts.length)
+                : '播放中';
+            const statusLabel = segmentLabel ? (segmentLabel + ' · ' + partLabel) : partLabel;
+            await playCastUrl(parts[index].url, manifest, statusLabel);
+        }
+    };
+
+    const openSessionReplay = async (item) => {
+        if (!item.recording_url) {
+            return;
+        }
+
+        replayAbort = false;
+        replayOpen.value = true;
+        replayLoading.value = true;
+        replayError.value = '';
+        replayHostLabel.value = formatReplayHostLabel(item);
+        replaySegmentInfo.value = '';
+        replayTitle.value = (item.host_name || item.host_address || ('会话 #' + item.id));
+        replayMeta.value = '加载回放...';
+
+        try {
+            const data = await api.get('/api/sessions/' + item.id + '/recording');
+            const parts = data.parts || [];
+            const manifest = data.manifest || {};
+            if (!parts.length) {
+                throw new Error('没有可用的回放分片');
+            }
+
+            replayLoading.value = false;
+            await nextTick();
+            await playRecordingParts(parts, manifest);
+            if (!replayAbort) {
+                replayMeta.value = '回放结束';
+            }
+        } catch (error) {
+            replayError.value = error.message || '加载回放失败';
+            replayMeta.value = '';
+        } finally {
+            replayLoading.value = false;
+        }
+    };
+
+    const openAiSessionReplay = async (item) => {
+        replayAbort = false;
+        replayOpen.value = true;
+        replayLoading.value = true;
+        replayError.value = '';
+        replayHostLabel.value = '';
+        replaySegmentInfo.value = '';
+        replayTitle.value = item.title || ('AI 会话 #' + item.id);
+        replayMeta.value = '加载回放...';
+
+        try {
+            const data = await api.get('/api/ai/sessions/' + item.id + '/recording');
+            const allSegments = data.data?.segments || [];
+            const recordable = allSegments.filter((seg) => seg.recording?.manifest_url);
+            if (!recordable.length) {
+                throw new Error('该 AI 会话没有可用的回放录像');
+            }
+
+            replayLoading.value = false;
+            await nextTick();
+
+            let played = 0;
+            let skipped = 0;
+            const missing = allSegments.length - recordable.length;
+
+            for (let index = 0; index < recordable.length; index++) {
+                if (replayAbort) {
+                    return;
+                }
+
+                const segment = recordable[index];
+                const hostLabel = formatReplayHostLabel(segment);
+                const order = Number.isFinite(segment.order) ? segment.order + 1 : (index + 1);
+                replayHostLabel.value = hostLabel;
+                replaySegmentInfo.value = allSegments.length > 1
+                    ? ('分段 ' + order + ' / ' + allSegments.length)
+                    : '';
+                const segmentLabel = allSegments.length > 1
+                    ? ('分段 ' + order + ' / ' + allSegments.length + ' · ' + hostLabel)
+                    : hostLabel;
+
+                try {
+                    const manifestData = await api.get(segment.recording.manifest_url);
+                    const parts = manifestData.parts || [];
+                    const manifest = manifestData.manifest || {};
+                    if (!parts.length) {
+                        skipped += 1;
+                        continue;
+                    }
+                    await playRecordingParts(parts, manifest, segmentLabel);
+                    played += 1;
+                    if (!replayAbort) {
+                        await new Promise((resolve) => setTimeout(resolve, 400));
+                    }
+                } catch (segmentError) {
+                    skipped += 1;
+                    if (!replayAbort) {
+                        replayMeta.value = segmentLabel + ' · 跳过（' + (segmentError.message || '加载失败') + '）';
+                    }
+                    await new Promise((resolve) => setTimeout(resolve, 600));
+                }
+            }
+
+            if (!replayAbort) {
+                const extras = missing + skipped;
+                replayMeta.value = extras > 0
+                    ? ('回放结束 · 已播放 ' + played + ' 段，' + extras + ' 段无录像或跳过')
+                    : ('回放结束 · 已播放 ' + played + ' 段');
+            }
+        } catch (error) {
+            replayError.value = error.message || '加载回放失败';
+            replayMeta.value = '';
+        } finally {
+            replayLoading.value = false;
+        }
+    };
+
+    return {
+        replayOpen,
+        replayTitle,
+        replayMeta,
+        replayHostLabel,
+        replaySegmentInfo,
+        replayLoading,
+        replayError,
+        replayHost,
+        closeReplay,
+        openSessionReplay,
+        openAiSessionReplay,
+    };
+};
+
+const createSessionFieldView = () => {
+    const fieldOpen = ref(false);
+    const fieldTitle = ref('');
+    const fieldHostLabel = ref('');
+    const fieldMeta = ref('');
+    const fieldLoading = ref(false);
+    const fieldError = ref('');
+    const fieldHost = ref(null);
+    let fieldTerm = null;
+    let fieldFitAddon = null;
+    let fieldAbort = false;
+
+    const disposeTerm = () => {
+        if (fieldTerm) {
+            fieldTerm.dispose();
+            fieldTerm = null;
+            fieldFitAddon = null;
+        }
+    };
+
+    const closeField = () => {
+        fieldAbort = true;
+        disposeTerm();
+        fieldOpen.value = false;
+        fieldLoading.value = false;
+        fieldError.value = '';
+        fieldHostLabel.value = '';
+        fieldMeta.value = '';
+    };
+
+    const ensureTerm = () => {
+        if (fieldTerm || !fieldHost.value) {
+            return;
+        }
+        fieldTerm = new Terminal({
+            disableStdin: true,
+            cursorBlink: false,
+            fontSize: 13,
+            convertEol: true,
+            scrollback: 10000,
+            theme: {
+                background: '#0f111a',
+                foreground: '#e6e6e6',
+            },
+        });
+        if (typeof FitAddon !== 'undefined' && FitAddon.FitAddon) {
+            fieldFitAddon = new FitAddon.FitAddon();
+            fieldTerm.loadAddon(fieldFitAddon);
+        }
+        fieldTerm.open(fieldHost.value);
+        fieldFitAddon?.fit();
+    };
+
+    const writeTranscript = (text) => {
+        ensureTerm();
+        if (!fieldTerm) {
+            return;
+        }
+        if (text) {
+            fieldTerm.write(text);
+        } else {
+            fieldTerm.writeln('\x1b[90m暂无现场输出\x1b[0m');
+        }
+        fieldTerm.scrollToBottom();
+    };
+
+    const loadCastParts = async (parts) => {
+        let combined = '';
+        for (const part of parts) {
+            if (fieldAbort) {
+                return combined;
+            }
+            const res = await fetch(part.url, { credentials: 'same-origin' });
+            if (!res.ok) {
+                throw new Error('加载现场记录失败');
+            }
+            combined += parseCastTerminalOutput(await res.text());
+        }
+        return combined;
+    };
+
+    const openSessionField = async (item) => {
+        fieldAbort = false;
+        fieldOpen.value = true;
+        fieldLoading.value = true;
+        fieldError.value = '';
+        fieldHostLabel.value = formatReplayHostLabel(item);
+        fieldTitle.value = item.host_name || item.host_address || ('会话 #' + item.id);
+        fieldMeta.value = item.session_type === 'ai_exec' ? 'AI 命令输出' : '终端与 AI 命令输出';
+
+        try {
+            const data = await api.get('/api/sessions/' + item.id + '/recording');
+            const parts = data.parts || [];
+            if (!parts.length) {
+                throw new Error('没有可用的现场记录');
+            }
+            fieldLoading.value = false;
+            await nextTick();
+            disposeTerm();
+            await nextTick();
+            const text = await loadCastParts(parts);
+            if (!fieldAbort) {
+                writeTranscript(text);
+            }
+        } catch (error) {
+            fieldError.value = error.message || '加载现场失败';
+        } finally {
+            fieldLoading.value = false;
+        }
+    };
+
+    const openAiSessionField = async (item) => {
+        fieldAbort = false;
+        fieldOpen.value = true;
+        fieldLoading.value = true;
+        fieldError.value = '';
+        fieldHostLabel.value = '';
+        fieldTitle.value = item.title || ('AI 会话 #' + item.id);
+        fieldMeta.value = 'AI 命令输出';
+
+        try {
+            const data = await api.get('/api/ai/sessions/' + item.id + '/live/transcript');
+            const payload = data.data || data;
+            const transcript = payload.transcript || '';
+            const segment = payload.active_segment;
+            if (segment) {
+                fieldHostLabel.value = formatReplayHostLabel(segment);
+            }
+            fieldLoading.value = false;
+            await nextTick();
+            disposeTerm();
+            await nextTick();
+            if (!fieldAbort) {
+                writeTranscript(transcript);
+            }
+        } catch (error) {
+            fieldError.value = error.message || '加载现场失败';
+        } finally {
+            fieldLoading.value = false;
+        }
+    };
+
+    return {
+        fieldOpen,
+        fieldTitle,
+        fieldHostLabel,
+        fieldMeta,
+        fieldLoading,
+        fieldError,
+        fieldHost,
+        closeField,
+        openSessionField,
+        openAiSessionField,
+    };
 };
 
 const appOptions = {
@@ -115,6 +1004,9 @@ const appOptions = {
         const currentView = computed(() => {
             const { name, id } = route.value;
             if (name === 'terminal') return 'terminal';
+            if (name === 'ai-session') return 'ai-session';
+            if (name === 'ai-home') return 'ai-home';
+            if (name === 'ai-sessions') return 'ai-sessions';
             if (name === 'live') return 'live';
             if (name === 'sessions') return 'sessions';
             if (name === 'audit-logs') return 'audit';
@@ -131,7 +1023,8 @@ const appOptions = {
         const terminalHostId = computed(() => (route.value.name === 'terminal' ? route.value.id : null));
         const terminalOpenNonce = computed(() => (route.value.name === 'terminal' ? route.value.nonce : null));
         const terminalOpenMode = computed(() => (route.value.name === 'terminal' ? route.value.mode : 'terminal'));
-        const isFullBleedView = computed(() => currentView.value === 'terminal');
+        const aiSessionId = computed(() => (route.value.name === 'ai-session' ? route.value.id : null));
+        const isFullBleedView = computed(() => currentView.value === 'terminal' || currentView.value === 'ai-session' || currentView.value === 'ai-home');
 
         const SIDEBAR_KEY = 'web-ssh-sidebar-collapsed';
         const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_KEY) === '1');
@@ -195,6 +1088,7 @@ const appOptions = {
             terminalHostId,
             terminalOpenNonce,
             terminalOpenMode,
+            aiSessionId,
             isFullBleedView,
             sidebarCollapsed,
             toggleSidebar,
@@ -218,7 +1112,7 @@ const appOptions = {
             @complete="onTwoFactorComplete"
             @flash="setFlash"
         />
-        <div v-else-if="twoFactorReady" class="layout" :class="{ 'sidebar-collapsed': sidebarCollapsed, 'layout-mobile-terminal': isMobile && isFullBleedView, 'mobile-nav-open': mobileNavOpen }" @click.self="closeMobileNav">
+        <div v-else-if="twoFactorReady" class="layout" :class="{ 'sidebar-collapsed': sidebarCollapsed, 'layout-mobile-terminal': isMobile && isFullBleedView, 'layout-ai-workspace': isFullBleedView, 'mobile-nav-open': mobileNavOpen }" @click.self="closeMobileNav">
             <aside class="sidebar" @click.stop>
                 <button
                     type="button"
@@ -243,6 +1137,9 @@ const appOptions = {
                     </a>
                     <a href="#/terminal" title="终端" :class="{ active: currentView === 'terminal' }" @click="closeMobileNav">
                         <span class="nav-icon">端</span><span class="nav-label">终端</span>
+                    </a>
+                    <a href="#/ai" title="AI 编排" :class="{ active: currentView === 'ai-home' || currentView === 'ai-session' || currentView === 'ai-sessions' }" @click="closeMobileNav">
+                        <span class="nav-icon">编</span><span class="nav-label">AI 编排</span>
                     </a>
                     <a href="#/live" title="实时现场" :class="{ active: currentView === 'live' }" @click="closeMobileNav">
                         <span class="nav-icon">场</span><span class="nav-label">实时现场</span>
@@ -277,6 +1174,13 @@ const appOptions = {
                     @flash="setFlash"
                 />
                 <LiveMonitorView v-if="currentView === 'live'" />
+                <AiSessionListView v-else-if="currentView === 'ai-sessions'" @flash="setFlash" />
+                <AiSessionWorkspace
+                    v-show="currentView === 'ai-home' || currentView === 'ai-session'"
+                    :visible="currentView === 'ai-home' || currentView === 'ai-session'"
+                    :session-id="aiSessionId"
+                    @flash="setFlash"
+                />
             </main>
         </div>
         <div v-else class="twofa-gate">
@@ -458,7 +1362,7 @@ const appOptions = {
 
                 onMounted(load);
 
-                return { items, total, page, perPage, q, loading, load, remove, test, navigate, openTerminalTab, openAiAssistant };
+                return { items, total, page, perPage, q, loading, load, remove, test, navigate, openTerminalTab, openAiAssistant, openAiOrchestrator };
             },
             template: `
                 <div class="panel">
@@ -466,6 +1370,7 @@ const appOptions = {
                         <input v-model="q" placeholder="搜索名称/地址/标签" @keyup.enter="load">
                         <button class="primary" @click="load" :disabled="loading">搜索</button>
                         <button class="primary" @click="navigate('#/hosts/0')">新建主机</button>
+                        <button @click="openAiOrchestrator()">AI 编排</button>
                     </div>
                     <table>
                         <thead>
@@ -1422,33 +2327,58 @@ const appOptions = {
                     }"
                 >
                     <div v-if="!embedded" class="terminal-live-header">
-                        <strong>实时现场</strong>
+                        <strong>现场</strong>
                         <div class="terminal-live-actions">
                             <button type="button" class="terminal-live-reset" title="清空并重新连接" :disabled="!connected" @click="resetLive">重置</button>
                             <span class="live-lamp terminal-live-lamp" :class="{ live }"><i></i>{{ statusText }}</span>
                         </div>
                     </div>
                     <div v-if="embedded && !collapsed" class="terminal-live-header terminal-live-header-embedded">
-                        <strong>实时现场</strong>
+                        <strong>现场</strong>
                         <div class="terminal-live-actions">
                             <button type="button" class="terminal-live-reset" title="清空并重新连接" :disabled="!connected" @click="resetLive">重置</button>
                             <span class="live-lamp terminal-live-lamp" :class="{ live }"><i></i>{{ statusText }}</span>
                         </div>
                     </div>
-                    <div v-if="!connected && !collapsed" class="ai-chat-hint">SSH 连接成功后显示终端输出</div>
+                    <div v-if="!connected && !collapsed" class="ai-chat-hint">SSH 连接成功后显示手动输入与 AI 命令输出</div>
                     <div v-show="connected && !collapsed" ref="termRef" class="terminal-live-term"></div>
                 </div>
             `,
         },
         AiChatPanel: {
+            components: { AiToolCallCard },
             props: {
                 connId: { type: String, default: '' },
+                aiSessionId: { type: Number, default: null },
                 connected: { type: Boolean, default: false },
                 visible: { type: Boolean, default: true },
                 paneActive: { type: Boolean, default: true },
                 title: { type: String, default: '' },
             },
             setup(props) {
+                const isSessionMode = computed(() => props.aiSessionId != null && props.aiSessionId > 0);
+                const chatApi = computed(() => {
+                    if (isSessionMode.value) {
+                        const base = '/api/ai/sessions/' + props.aiSessionId;
+                        return {
+                            bootstrap: base + '/bootstrap',
+                            stream: base + '/chat/stream',
+                            approval: base + '/approval/stream',
+                            feedback: base + '/feedback/stream',
+                            stop: base + '/stop',
+                            reset: base + '/reset',
+                        };
+                    }
+                    return {
+                        bootstrap: '/api/ai/bootstrap?conn_id=' + encodeURIComponent(props.connId),
+                        stream: '/api/ai/chat/stream',
+                        approval: '/api/ai/chat/approval/stream',
+                        feedback: '/api/ai/chat/feedback/stream',
+                        stop: '/api/ai/chat/stop',
+                        reset: '/api/ai/chat/reset',
+                    };
+                });
+                const threadReady = computed(() => isSessionMode.value ? !!props.aiSessionId : !!props.connId);
                 const toolCallsOpen = ref(false);
                 const toolCalls = ref([]);
 
@@ -1462,40 +2392,89 @@ const appOptions = {
                     status: item.status || (item.result != null && item.result !== '' ? 'done' : 'running'),
                 }));
 
+                const normalizeTimelineItem = (item, idx = 0) => {
+                    if (item?.kind === 'tool') {
+                        const normalized = normalizeToolCalls([item])[0];
+                        return { kind: 'tool', ...normalized };
+                    }
+                    return {
+                        kind: 'message',
+                        role: item?.role || 'assistant',
+                        content: item?.content || '',
+                        html: item?.html || item?.content || '',
+                        streaming: false,
+                    };
+                };
+
+                const syncToolCallsFromTimeline = () => {
+                    toolCalls.value = messages.value
+                        .filter((item) => item.kind === 'tool')
+                        .map((item, idx) => ({
+                            key: item.key || item.callId || `${item.name || 'tool'}-${idx}`,
+                            callId: item.callId || null,
+                            name: item.name || '',
+                            label: item.label || item.name || 'tool',
+                            inputs: item.inputs || {},
+                            result: item.result ?? null,
+                            status: item.status || 'done',
+                        }));
+                };
+
+                const findToolTarget = (data) => {
+                    const callId = data.callId || null;
+                    if (callId) {
+                        const fromTimeline = [...messages.value].reverse().find(
+                            (item) => item.kind === 'tool' && item.callId === callId,
+                        );
+                        if (fromTimeline) {
+                            return fromTimeline;
+                        }
+                        return [...toolCalls.value].reverse().find((item) => item.callId === callId) || null;
+                    }
+                    const fromTimeline = [...messages.value].reverse().find(
+                        (item) => item.kind === 'tool' && item.name === data.name && item.status === 'running',
+                    );
+                    if (fromTimeline) {
+                        return fromTimeline;
+                    }
+                    return [...toolCalls.value].reverse().find(
+                        (item) => item.name === data.name && item.status === 'running',
+                    ) || null;
+                };
+
                 const recordToolEvent = (data) => {
                     if (!data) return;
                     const callId = data.callId || null;
                     if (data.phase === 'call') {
-                        toolCalls.value.push({
-                            key: callId || `tmp-${Date.now()}-${toolCalls.value.length}`,
+                        const entry = {
+                            kind: 'tool',
+                            key: callId || `tmp-${Date.now()}-${messages.value.length}`,
                             callId,
                             name: data.name || '',
                             label: data.label || data.name || 'tool',
                             inputs: data.inputs || {},
                             result: null,
                             status: 'running',
-                        });
+                        };
+                        messages.value.push(entry);
+                        syncToolCallsFromTimeline();
                         return;
                     }
                     if (data.phase !== 'result') return;
 
-                    let target = null;
-                    if (callId) {
-                        target = [...toolCalls.value].reverse().find((item) => item.callId === callId) || null;
-                    }
-                    if (!target) {
-                        target = [...toolCalls.value].reverse().find((item) => item.name === data.name && item.status === 'running') || null;
-                    }
+                    const target = findToolTarget(data);
                     if (target) {
                         if (data.inputs && Object.keys(data.inputs).length) {
                             target.inputs = data.inputs;
                         }
                         target.result = data.result ?? null;
                         target.status = 'done';
+                        syncToolCallsFromTimeline();
                         return;
                     }
-                    toolCalls.value.push({
-                        key: callId || `tmp-${Date.now()}-${toolCalls.value.length}`,
+                    messages.value.push({
+                        kind: 'tool',
+                        key: callId || `tmp-${Date.now()}-${messages.value.length}`,
                         callId,
                         name: data.name || '',
                         label: data.label || data.name || 'tool',
@@ -1503,22 +2482,7 @@ const appOptions = {
                         result: data.result ?? null,
                         status: 'done',
                     });
-                };
-
-                const formatToolJson = (value) => {
-                    if (value == null || value === '') return '';
-                    if (typeof value === 'string') {
-                        try {
-                            return JSON.stringify(JSON.parse(value), null, 2);
-                        } catch {
-                            return value;
-                        }
-                    }
-                    try {
-                        return JSON.stringify(value, null, 2);
-                    } catch {
-                        return String(value);
-                    }
+                    syncToolCallsFromTimeline();
                 };
 
                 const openToolCalls = () => {
@@ -1552,6 +2516,7 @@ const appOptions = {
 
                 const messages = ref([]);
                 const draft = ref('');
+                const toolHostMap = computed(() => buildHostMapFromTimeline(messages.value));
                 const busy = ref(false);
                 const busyText = ref('');
                 const configured = ref(false);
@@ -1672,9 +2637,9 @@ const appOptions = {
                 };
 
                 const bootstrap = async () => {
-                    if (!props.connId) return;
+                    if (!threadReady.value) return;
                     try {
-                        const res = await fetch('/api/ai/bootstrap?conn_id=' + encodeURIComponent(props.connId), {
+                        const res = await fetch(chatApi.value.bootstrap, {
                             credentials: 'same-origin',
                         });
                         const json = await res.json();
@@ -1684,12 +2649,21 @@ const appOptions = {
                         }
                         configured.value = !!json.data?.configured;
                         enabled.value = json.data?.enabled !== false;
-                        messages.value = (json.data?.messages || []).map((m) => ({
-                            role: m.role,
-                            html: m.html || m.content,
-                            content: m.content,
-                        }));
-                        toolCalls.value = normalizeToolCalls(json.data?.tool_calls);
+                        if (Array.isArray(json.data?.timeline) && json.data.timeline.length) {
+                            messages.value = json.data.timeline.map(normalizeTimelineItem);
+                        } else {
+                            messages.value = (json.data?.messages || []).map((m) => ({
+                                kind: 'message',
+                                role: m.role,
+                                html: m.html || m.content,
+                                content: m.content,
+                                streaming: false,
+                            }));
+                        }
+                        syncToolCallsFromTimeline();
+                        if (!toolCalls.value.length) {
+                            toolCalls.value = normalizeToolCalls(json.data?.tool_calls);
+                        }
                         approval.value = json.data?.approval || null;
                         feedback.value = json.data?.feedback || null;
                         resetFeedbackForm();
@@ -1702,24 +2676,31 @@ const appOptions = {
 
                 const appendAssistantDelta = (text) => {
                     const last = messages.value[messages.value.length - 1];
-                    if (last && last.role === 'assistant' && last.streaming) {
+                    if (last && last.kind === 'message' && last.role === 'assistant' && last.streaming) {
                         last.content += text;
                         last.html = (last.html || '') + text.replace(/\n/g, '<br>');
                         scrollToBottom();
                         return;
                     }
-                    messages.value.push({ role: 'assistant', content: text, html: text.replace(/\n/g, '<br>'), streaming: true });
+                    messages.value.push({
+                        kind: 'message',
+                        role: 'assistant',
+                        content: text,
+                        html: text.replace(/\n/g, '<br>'),
+                        streaming: true,
+                    });
                     scrollToBottom();
                 };
 
                 const finalizeAssistant = (payload) => {
                     const last = messages.value[messages.value.length - 1];
-                    if (last && last.role === 'assistant' && last.streaming) {
+                    if (last && last.kind === 'message' && last.role === 'assistant' && last.streaming) {
                         last.streaming = false;
                         if (payload?.html) last.html = payload.html;
                         if (payload?.content) last.content = payload.content;
                     } else if (payload?.content) {
                         messages.value.push({
+                            kind: 'message',
                             role: 'assistant',
                             content: payload.content,
                             html: payload.html || payload.content.replace(/\n/g, '<br>'),
@@ -1796,69 +2777,102 @@ const appOptions = {
                         busy.value = false;
                         busyText.value = '';
                         const last = messages.value[messages.value.length - 1];
-                        if (last?.streaming) last.streaming = false;
+                        if (last?.kind === 'message' && last.streaming) last.streaming = false;
                         await scrollToBottom();
                     }
                 };
 
                 const sendMessage = async () => {
                     const text = draft.value.trim();
-                    if (!text || busy.value || !props.connId || !props.connected) return;
-                    messages.value.push({ role: 'user', content: text, html: text.replace(/\n/g, '<br>') });
+                    if (!text || busy.value || !threadReady.value) return;
+                    if (!isSessionMode.value && !props.connected) return;
+                    messages.value.push({
+                        kind: 'message',
+                        role: 'user',
+                        content: text,
+                        html: text.replace(/\n/g, '<br>'),
+                        streaming: false,
+                    });
                     draft.value = '';
                     await scrollToBottom();
-                    await runStream('/api/ai/chat/stream', { conn_id: props.connId, message: text });
+                    const body = isSessionMode.value
+                        ? { message: text }
+                        : { conn_id: props.connId, message: text };
+                    await runStream(chatApi.value.stream, body);
                 };
 
                 const submitApproval = async (approved) => {
-                    if (!props.connId || busy.value) return;
-                    messages.value.push({ role: 'user', content: approved ? '批准' : '拒绝', html: approved ? '批准' : '拒绝' });
+                    if (!threadReady.value || busy.value) return;
+                    messages.value.push({
+                        kind: 'message',
+                        role: 'user',
+                        content: approved ? '批准' : '拒绝',
+                        html: approved ? '批准' : '拒绝',
+                        streaming: false,
+                    });
                     approval.value = null;
                     await scrollToBottom();
-                    await runStream('/api/ai/chat/approval/stream', {
-                        conn_id: props.connId,
-                        approved: approved ? 1 : 0,
-                    });
+                    const body = isSessionMode.value
+                        ? { approved: approved ? 1 : 0 }
+                        : { conn_id: props.connId, approved: approved ? 1 : 0 };
+                    await runStream(chatApi.value.approval, body);
                 };
 
                 const submitFeedback = async () => {
-                    if (!props.connId || busy.value || !feedback.value) return;
-                    messages.value.push({ role: 'user', content: '已提交反馈', html: '已提交反馈' });
+                    if (!threadReady.value || busy.value || !feedback.value) return;
+                    messages.value.push({
+                        kind: 'message',
+                        role: 'user',
+                        content: '已提交反馈',
+                        html: '已提交反馈',
+                        streaming: false,
+                    });
                     const answers = buildFeedbackAnswers();
                     feedback.value = null;
                     resetFeedbackForm();
                     await scrollToBottom();
-                    await runStream('/api/ai/chat/feedback/stream', {
-                        conn_id: props.connId,
-                        answers,
-                    });
+                    const body = isSessionMode.value
+                        ? { answers }
+                        : { conn_id: props.connId, answers };
+                    await runStream(chatApi.value.feedback, body);
                 };
 
                 const skipFeedback = async () => {
-                    if (!props.connId || busy.value || !feedback.value) return;
-                    messages.value.push({ role: 'user', content: '已跳过反馈', html: '已跳过反馈' });
+                    if (!threadReady.value || busy.value || !feedback.value) return;
+                    messages.value.push({
+                        kind: 'message',
+                        role: 'user',
+                        content: '已跳过反馈',
+                        html: '已跳过反馈',
+                        streaming: false,
+                    });
                     feedback.value = null;
                     resetFeedbackForm();
                     await scrollToBottom();
-                    await runStream('/api/ai/chat/feedback/stream', {
-                        conn_id: props.connId,
-                        skip: true,
-                    });
+                    const body = isSessionMode.value ? { skip: true } : { conn_id: props.connId, skip: true };
+                    await runStream(chatApi.value.feedback, body);
                 };
 
-                const composerDisabled = computed(() => busy.value || !props.connected || !configured.value || !!approval.value || !!feedback.value);
+                const composerDisabled = computed(() => {
+                    if (busy.value || !configured.value || !!approval.value || !!feedback.value) return true;
+                    if (isSessionMode.value) return false;
+                    return !props.connected;
+                });
 
                 const stopGeneration = async () => {
                     abortController?.abort();
-                    if (!props.connId) return;
-                    await postJson('/api/ai/chat/stop', { conn_id: props.connId });
+                    if (!threadReady.value) return;
+                    const body = isSessionMode.value ? {} : { conn_id: props.connId };
+                    await postJson(chatApi.value.stop, body);
                     await bootstrap();
                 };
 
                 const resetChat = async () => {
-                    if (!props.connId || busy.value) return;
-                    await postJson('/api/ai/chat/reset', { conn_id: props.connId });
+                    if (!threadReady.value || busy.value) return;
+                    const body = isSessionMode.value ? {} : { conn_id: props.connId };
+                    await postJson(chatApi.value.reset, body);
                     messages.value = [];
+                    toolCalls.value = [];
                     toolCallsOpen.value = false;
                     approval.value = null;
                     feedback.value = null;
@@ -1877,7 +2891,7 @@ const appOptions = {
                     sendMessage();
                 };
 
-                watch(() => props.connId, () => {
+                watch(() => [props.connId, props.aiSessionId], () => {
                     messages.value = [];
                     toolCalls.value = [];
                     toolCallsOpen.value = false;
@@ -1898,8 +2912,8 @@ const appOptions = {
                     toolCalls,
                     openToolCalls,
                     closeToolCalls,
-                    formatToolJson,
                     messages,
+                    toolHostMap,
                     draft,
                     busy,
                     busyText,
@@ -1924,6 +2938,8 @@ const appOptions = {
                     composerDisabled,
                     stopGeneration,
                     resetChat,
+                    isSessionMode,
+                    threadReady,
                 };
             },
             template: `
@@ -1956,33 +2972,32 @@ const appOptions = {
                                 </div>
                                 <div class="ai-tool-popup-body">
                                     <div v-if="!toolCalls.length" class="ai-chat-hint">暂无工具调用</div>
-                                    <div v-for="item in toolCalls" :key="item.key" class="ai-tool-call-item">
-                                        <div class="ai-tool-call-head">
-                                            <strong>{{ item.label }}</strong>
-                                            <span class="ai-tool-call-status" :class="item.status">{{ item.status === 'running' ? '执行中' : '已完成' }}</span>
-                                        </div>
-                                        <div v-if="Object.keys(item.inputs || {}).length" class="ai-tool-call-block">
-                                            <div class="ai-tool-call-label">参数</div>
-                                            <pre>{{ formatToolJson(item.inputs) }}</pre>
-                                        </div>
-                                        <div v-if="item.result != null && item.result !== ''" class="ai-tool-call-block">
-                                            <div class="ai-tool-call-label">结果</div>
-                                            <pre>{{ formatToolJson(item.result) }}</pre>
-                                        </div>
-                                    </div>
+                                    <AiToolCallCard
+                                        v-for="item in toolCalls"
+                                        :key="item.key"
+                                        :item="item"
+                                        :host-map="toolHostMap"
+                                        class="ai-tool-call-item"
+                                    />
                                 </div>
                             </div>
                         </div>
                     </Teleport>
-                    <div v-if="!connected" class="ai-chat-hint">SSH 连接成功后可用</div>
+                    <div v-if="!isSessionMode && !connected" class="ai-chat-hint">SSH 连接成功后可用</div>
+                    <div v-else-if="isSessionMode && !threadReady" class="ai-chat-hint">正在加载 AI 会话…</div>
                     <div v-else-if="!enabled" class="ai-chat-hint">AI 助手未启用</div>
                     <div v-else-if="!configured" class="ai-chat-hint">请在 .env 配置 NEURON_AI_KEY</div>
                     <div class="ai-chat-body" ref="chatBodyRef">
                         <div ref="logRef" class="ai-chat-log">
                             <div v-if="!messages.length" class="ai-chat-empty">描述你想完成的任务，AI 会提议命令，你审核后执行。</div>
-                            <div v-for="(msg, idx) in messages" :key="idx" class="ai-msg" :class="msg.role">
-                                <div class="ai-bubble" :class="{ streaming: msg.streaming }" v-html="msg.html"></div>
-                            </div>
+                            <template v-for="(msg, idx) in messages" :key="msg.key || idx">
+                                <div v-if="msg.kind === 'tool'" class="ai-msg tool">
+                                    <AiToolCallCard :item="msg" :host-map="toolHostMap" compact class="ai-tool-inline" />
+                                </div>
+                                <div v-else class="ai-msg" :class="msg.role">
+                                    <div class="ai-bubble" :class="{ streaming: msg.streaming }" v-html="msg.html"></div>
+                                </div>
+                            </template>
                             <div v-if="busyText" class="ai-busy">{{ busyText }}</div>
                             <div v-if="errorText" class="ai-error">{{ errorText }}</div>
                         </div>
@@ -1990,7 +3005,17 @@ const appOptions = {
                     <div class="ai-chat-footer">
                         <div v-if="approval" class="ai-approval">
                             <h4>待审核命令</h4>
-                            <pre>{{ approval.actions?.map(a => a.detail || a.description).join('\\n\\n') }}</pre>
+                            <div
+                                v-for="(action, actionIdx) in approval.actions || []"
+                                :key="action.id || actionIdx"
+                                class="ai-approval-action"
+                            >
+                                <div v-if="action.host?.label" class="ai-approval-host">
+                                    <span class="ai-approval-host-label">目标主机</span>
+                                    <strong>{{ action.host.label }}</strong>
+                                </div>
+                                <pre>{{ action.detail || action.description }}</pre>
+                            </div>
                             <div class="actions">
                                 <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
                                 <button type="button" @click="submitApproval(false)" :disabled="busy">拒绝</button>
@@ -2081,6 +3106,548 @@ const appOptions = {
                             <div class="ai-composer-actions">
                                 <button class="primary ai-send-btn" type="button" @click="sendMessage" :disabled="composerDisabled || !draft.trim()">发送</button>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            `,
+        },
+        AiSessionLivePane: {
+            props: {
+                aiSessionId: { type: Number, default: null },
+                activeHost: { type: Object, default: null },
+                visible: { type: Boolean, default: true },
+                paneActive: { type: Boolean, default: true },
+            },
+            setup(props) {
+                const termRef = ref(null);
+                const live = ref(false);
+                const statusText = ref('等待输出');
+                const hostLabel = ref('');
+                let term = null;
+                let fitAddon = null;
+                let source = null;
+                let reconnectTimer = null;
+                let resizeObserver = null;
+
+                const fitTerm = () => {
+                    nextTick(() => fitAddon?.fit());
+                };
+
+                const teardownFitObservers = () => {
+                    if (resizeObserver) {
+                        resizeObserver.disconnect();
+                        resizeObserver = null;
+                    }
+                };
+
+                const setupFitObservers = () => {
+                    teardownFitObservers();
+                    if (termRef.value && typeof ResizeObserver !== 'undefined') {
+                        resizeObserver = new ResizeObserver(() => fitTerm());
+                        resizeObserver.observe(termRef.value);
+                    }
+                };
+
+                const decodeChunkBytes = (b64) => {
+                    try {
+                        const binary = atob(b64);
+                        const bytes = new Uint8Array(binary.length);
+                        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                        return new TextDecoder().decode(bytes);
+                    } catch { return ''; }
+                };
+
+                const ensureTerm = () => {
+                    if (term || !termRef.value) return;
+                    term = new Terminal({
+                        disableStdin: true,
+                        cursorBlink: false,
+                        fontSize: 13,
+                        theme: { background: '#0f111a', foreground: '#e6e6e6' },
+                        convertEol: true,
+                    });
+                    if (window.FitAddon?.FitAddon) {
+                        fitAddon = new window.FitAddon.FitAddon();
+                        term.loadAddon(fitAddon);
+                    }
+                    term.open(termRef.value);
+                    fitAddon?.fit();
+                    setupFitObservers();
+                };
+
+                const writeStatus = (text) => {
+                    if (!term) return;
+                    term.writeln('\r\n\x1b[90m' + text + '\x1b[0m');
+                };
+
+                const formatHostLabel = (data) => {
+                    if (!data) return '';
+                    const name = String(data.host_name || '').trim();
+                    const addr = String(data.host_address || '').trim();
+                    if (name && addr && name !== addr) {
+                        return name + ' · ' + addr;
+                    }
+                    return name || addr || '';
+                };
+
+                const writeSegmentSeparator = (data) => {
+                    const label = formatHostLabel(data) || String(data?.host_name || data?.host_address || '').trim();
+                    if (!label) return;
+                    writeStatus('────────── 切换主机 · ' + label + ' ──────────');
+                };
+
+                const applyHostFromData = (data) => {
+                    const label = formatHostLabel(data);
+                    if (label) {
+                        hostLabel.value = label;
+                    }
+                };
+
+                const handleEvent = (kind, data) => {
+                    ensureTerm();
+                    if (kind === 'replay') {
+                        const bytes = decodeChunkBytes(data?.chunk || '');
+                        if (bytes && term) {
+                            term.write(bytes);
+                            term.scrollToBottom();
+                        }
+                        applyHostFromData(data);
+                        live.value = false;
+                        statusText.value = '已恢复';
+                        return;
+                    }
+                    if (kind === 'status') {
+                        if (data?.state === 'idle') {
+                            live.value = false;
+                            statusText.value = '等待输出';
+                            if (!hostLabel.value) {
+                                applyHostFromData(data);
+                            }
+                            if (!term || term.buffer.active.length === 0) {
+                                writeStatus(data?.message || '等待命令执行…');
+                            }
+                        }
+                        return;
+                    }
+                    if (kind === 'start' || kind === 'connected' || kind === 'segment_switch') {
+                        applyHostFromData(data);
+                    }
+                    if (kind === 'segment_switch') {
+                        writeSegmentSeparator(data);
+                        return;
+                    }
+                    if (kind === 'output') {
+                        const bytes = decodeChunkBytes(data?.chunk || '');
+                        if (bytes && term) {
+                            term.write(bytes);
+                            term.scrollToBottom();
+                        }
+                        return;
+                    }
+                    if (kind === 'connected') {
+                        live.value = true;
+                        statusText.value = 'live';
+                    }
+                    if (kind === 'error') {
+                        live.value = false;
+                        statusText.value = 'error';
+                        writeStatus('[error] ' + (data?.message || '输出异常'));
+                    }
+                    if (kind === 'disconnected') {
+                        live.value = false;
+                        statusText.value = '等待输出';
+                        writeStatus(data?.message || '命令已结束，等待下一次执行…');
+                    }
+                };
+
+                let idleStream = false;
+
+                const closeStream = () => {
+                    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+                    if (source) { source.close(); source = null; }
+                    idleStream = false;
+                };
+
+                const openStream = (clearTerm = false) => {
+                    if (!props.aiSessionId) return;
+                    closeStream();
+                    if (clearTerm) {
+                        term?.clear();
+                        hostLabel.value = '';
+                    }
+                    statusText.value = '连接中';
+                    source = new EventSource('/api/ai/sessions/' + props.aiSessionId + '/live/stream');
+                    ['replay', 'start', 'connected', 'segment_switch', 'output', 'error', 'disconnected', 'status'].forEach((name) => {
+                        source.addEventListener(name, (event) => {
+                            let data = event.data;
+                            try { data = JSON.parse(event.data); } catch { /* raw */ }
+                            if (name === 'status' && data?.state === 'idle') {
+                                idleStream = true;
+                            }
+                            handleEvent(name, data);
+                        });
+                    });
+                    source.onerror = () => {
+                        closeStream();
+                        if (!props.aiSessionId) return;
+                        statusText.value = '重连中';
+                        reconnectTimer = setTimeout(() => openStream(), idleStream ? 5000 : 2000);
+                    };
+                };
+
+                const resetLive = () => {
+                    closeStream();
+                    term?.clear();
+                    hostLabel.value = '';
+                    nextTick(() => { ensureTerm(); fitTerm(); openStream(false); });
+                };
+
+                watch(() => props.aiSessionId, (id, prev) => {
+                    if (id !== prev && term) {
+                        term.clear();
+                        hostLabel.value = '';
+                    }
+                });
+
+                watch(() => [props.aiSessionId, props.visible], () => {
+                    if (!props.visible || !props.aiSessionId) {
+                        closeStream();
+                        return;
+                    }
+                    nextTick(() => { ensureTerm(); fitTerm(); openStream(false); });
+                }, { immediate: true });
+
+                watch(() => props.activeHost, (host) => {
+                    if (host) {
+                        applyHostFromData(host);
+                    }
+                }, { immediate: true });
+
+                watch(() => props.paneActive, (active) => {
+                    if (active) fitTerm();
+                });
+
+                onBeforeUnmount(() => {
+                    teardownFitObservers();
+                    closeStream();
+                });
+
+                return { termRef, live, statusText, hostLabel, resetLive };
+            },
+            template: `
+                <div class="terminal-live-pane embedded">
+                    <div class="terminal-live-header terminal-live-header-embedded">
+                        <div class="terminal-live-title">
+                            <strong>现场</strong>
+                            <span v-if="hostLabel" class="terminal-live-host" :title="hostLabel">{{ hostLabel }}</span>
+                            <span v-else class="terminal-live-host muted">等待命令执行</span>
+                        </div>
+                        <div class="terminal-live-actions">
+                            <button type="button" class="terminal-live-reset" title="重新连接" @click="resetLive">重置</button>
+                            <span class="live-lamp terminal-live-lamp" :class="{ live }"><i></i>{{ statusText }}</span>
+                        </div>
+                    </div>
+                    <div v-if="!aiSessionId" class="ai-chat-hint">创建会话后显示命令输出</div>
+                    <div v-show="aiSessionId" ref="termRef" class="terminal-live-term"></div>
+                </div>
+            `,
+        },
+        AiSessionListView: {
+            emits: ['flash'],
+            setup(props, { emit }) {
+                const items = ref([]);
+                const total = ref(0);
+                const page = ref(1);
+                const perPage = ref(20);
+                const loading = ref(false);
+
+                const load = async () => {
+                    loading.value = true;
+                    try {
+                        const data = await api.get('/api/ai/sessions?page=' + page.value + '&per_page=' + perPage.value);
+                        items.value = data.data?.items || [];
+                        total.value = data.data?.total || 0;
+                    } catch (e) {
+                        emit('flash', e.message, 'err');
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const createSession = async () => {
+                    try {
+                        const data = await api.post('/api/ai/sessions', {});
+                        openAiSession(data.data.id);
+                    } catch (e) {
+                        emit('flash', e.message, 'err');
+                    }
+                };
+
+                const replay = createAsciinemaReplay();
+                const field = createSessionFieldView();
+
+                onMounted(load);
+                onBeforeUnmount(() => {
+                    replay.closeReplay();
+                    field.closeField();
+                });
+
+                return {
+                    items,
+                    total,
+                    page,
+                    perPage,
+                    loading,
+                    load,
+                    createSession,
+                    openAiSession,
+                    openReplay: replay.openAiSessionReplay,
+                    closeReplay: replay.closeReplay,
+                    replayOpen: replay.replayOpen,
+                    replayTitle: replay.replayTitle,
+                    replayMeta: replay.replayMeta,
+                    replayHostLabel: replay.replayHostLabel,
+                    replaySegmentInfo: replay.replaySegmentInfo,
+                    replayLoading: replay.replayLoading,
+                    replayError: replay.replayError,
+                    replayHost: replay.replayHost,
+                    openField: field.openAiSessionField,
+                    closeField: field.closeField,
+                    fieldOpen: field.fieldOpen,
+                    fieldTitle: field.fieldTitle,
+                    fieldHostLabel: field.fieldHostLabel,
+                    fieldMeta: field.fieldMeta,
+                    fieldLoading: field.fieldLoading,
+                    fieldError: field.fieldError,
+                    fieldHost: field.fieldHost,
+                };
+            },
+            template: `
+                <div class="panel">
+                    <div class="toolbar">
+                        <h2>AI 会话</h2>
+                        <button class="primary" @click="createSession">新建会话</button>
+                        <button @click="load" :disabled="loading">刷新</button>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr><th>ID</th><th>标题</th><th>状态</th><th>主机数</th><th>分段</th><th>开始</th><th>操作</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="item in items" :key="item.id">
+                                <td>{{ item.id }}</td>
+                                <td>{{ item.title || '（未命名）' }}</td>
+                                <td>{{ item.status }}</td>
+                                <td>{{ item.host_count || 0 }}</td>
+                                <td>{{ item.segment_count || 0 }}</td>
+                                <td>{{ item.created_at }}</td>
+                                <td class="actions">
+                                    <button @click="openAiSession(item.id)">继续</button>
+                                    <button
+                                        type="button"
+                                        class="btn-link"
+                                        @click="openField(item)"
+                                    >现场</button>
+                                    <button
+                                        v-if="item.segment_count > 0"
+                                        type="button"
+                                        class="btn-link"
+                                        @click="openReplay(item)"
+                                    >回放</button>
+                                </td>
+                            </tr>
+                            <tr v-if="!items.length"><td colspan="7">暂无 AI 会话，点击「新建会话」开始。</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="pagination">
+                        <button :disabled="page <= 1" @click="page--; load()">上一页</button>
+                        <span>第 {{ page }} 页 / 共 {{ Math.ceil(total / perPage) || 1 }} 页</span>
+                        <button :disabled="page * perPage >= total" @click="page++; load()">下一页</button>
+                    </div>
+
+                    <div v-if="replayOpen" class="replay-overlay" @click.self="closeReplay">
+                        <div class="replay-dialog">
+                            <div class="replay-head">
+                                <div>
+                                    <h3>AI 会话回放 · {{ replayTitle }}</h3>
+                                    <div class="replay-subline">
+                                        <span v-if="replayHostLabel" class="replay-host-badge" :title="replayHostLabel">{{ replayHostLabel }}</span>
+                                        <span v-if="replaySegmentInfo" class="replay-segment-badge">{{ replaySegmentInfo }}</span>
+                                        <span class="replay-status">{{ replayMeta }}</span>
+                                    </div>
+                                </div>
+                                <button type="button" class="replay-close" @click="closeReplay">关闭</button>
+                            </div>
+                            <div class="replay-body">
+                                <div v-if="replayLoading" class="live-empty">正在加载回放...</div>
+                                <div v-else-if="replayError" class="message err">{{ replayError }}</div>
+                                <div ref="replayHost" class="replay-host"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="fieldOpen" class="replay-overlay" @click.self="closeField">
+                        <div class="replay-dialog">
+                            <div class="replay-head">
+                                <div>
+                                    <h3>现场 · {{ fieldTitle }}</h3>
+                                    <div class="replay-subline">
+                                        <span v-if="fieldHostLabel" class="replay-host-badge" :title="fieldHostLabel">{{ fieldHostLabel }}</span>
+                                        <span class="replay-status">{{ fieldMeta }}</span>
+                                    </div>
+                                </div>
+                                <button type="button" class="replay-close" @click="closeField">关闭</button>
+                            </div>
+                            <div class="replay-body">
+                                <div v-if="fieldLoading" class="live-empty">正在加载现场...</div>
+                                <div v-else-if="fieldError" class="message err">{{ fieldError }}</div>
+                                <div ref="fieldHost" class="field-host"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `,
+        },
+        AiSessionWorkspace: {
+            props: {
+                sessionId: { type: Number, default: null },
+                visible: { type: Boolean, default: true },
+            },
+            emits: ['flash'],
+            setup(props, { emit }) {
+                const resolvedId = ref(props.sessionId);
+                const sessionMeta = ref(null);
+                const segments = ref([]);
+                const activeHost = ref(null);
+                const mobilePane = ref('ai');
+                const isMobile = ref(false);
+                const loading = ref(false);
+
+                const createSession = async () => {
+                    if (loading.value) return null;
+                    loading.value = true;
+                    try {
+                        const data = await api.post('/api/ai/sessions', {});
+                        const id = data.data?.id;
+                        if (!id) {
+                            throw new Error('创建 AI 会话失败');
+                        }
+                        openAiSession(id);
+                        return id;
+                    } catch (e) {
+                        emit('flash', e.message || '创建 AI 会话失败', 'err');
+                        return null;
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const loadMeta = async () => {
+                    if (!resolvedId.value) return;
+                    try {
+                        const data = await api.get('/api/ai/sessions/' + resolvedId.value);
+                        sessionMeta.value = data.data?.session || null;
+                        segments.value = data.data?.segments || [];
+                        activeHost.value = data.data?.active_segment || null;
+                    } catch (e) {
+                        emit('flash', e.message, 'err');
+                    }
+                };
+
+                const initSession = async () => {
+                    if (props.sessionId != null && props.sessionId > 0) {
+                        resolvedId.value = props.sessionId;
+                        await loadMeta();
+                    }
+                };
+
+                onMounted(async () => {
+                    const mq = window.matchMedia('(max-width: 768px)');
+                    isMobile.value = mq.matches;
+                    mq.addEventListener('change', () => { isMobile.value = mq.matches; });
+                    await initSession();
+                });
+
+                watch(() => props.sessionId, async (id) => {
+                    if (id != null && id > 0) {
+                        resolvedId.value = id;
+                        await loadMeta();
+                        return;
+                    }
+                    resolvedId.value = null;
+                    sessionMeta.value = null;
+                    segments.value = [];
+                    activeHost.value = null;
+                });
+
+                const title = computed(() => sessionMeta.value?.title || 'AI 编排会话');
+
+                return {
+                    resolvedId,
+                    sessionMeta,
+                    segments,
+                    activeHost,
+                    mobilePane,
+                    isMobile,
+                    loading,
+                    title,
+                    loadMeta,
+                    createSession,
+                };
+            },
+            template: `
+                <div v-if="loading" class="ai-assistant-layout"><p>正在创建 AI 会话…</p></div>
+                <div v-else-if="!resolvedId" class="ai-assistant-layout ai-session-layout">
+                    <div class="ai-assistant-header">
+                        <div class="ai-assistant-meta">
+                            <h2>AI 编排</h2>
+                            <p>跨主机 AI 编排 · 新建或继续历史会话</p>
+                        </div>
+                        <div class="actions">
+                            <a href="#/ai/sessions">历史会话</a>
+                        </div>
+                    </div>
+                    <div class="ai-session-init-hint ai-assistant-empty">
+                        <p>描述任务后，AI 会自动选择主机、提议命令，你审核后执行。</p>
+                        <button class="primary" type="button" @click="createSession" :disabled="loading">新建会话</button>
+                        <a href="#/ai/sessions">查看历史会话</a>
+                    </div>
+                </div>
+                <div v-else class="ai-assistant-layout ai-session-layout">
+                    <div class="ai-assistant-header">
+                        <div class="ai-assistant-meta">
+                            <h2>{{ title }}</h2>
+                            <p>跨主机 AI 编排 · 会话 #{{ resolvedId }}</p>
+                        </div>
+                        <div class="actions">
+                            <a href="#/ai/sessions">历史会话</a>
+                        </div>
+                    </div>
+                    <div v-if="isMobile" class="terminal-mobile-tabs" role="tablist">
+                        <button type="button" :class="{ active: mobilePane === 'live' }" @click="mobilePane = 'live'">现场</button>
+                        <button type="button" :class="{ active: mobilePane === 'ai' }" @click="mobilePane = 'ai'">AI 对话</button>
+                    </div>
+                    <div class="terminal-body ai-session-body" :class="{ 'is-mobile': isMobile }">
+                        <div class="terminal-left-column" :class="{ 'pane-mobile-active': !isMobile || mobilePane === 'live' }">
+                            <AiSessionLivePane
+                                :ai-session-id="resolvedId"
+                                :active-host="activeHost"
+                                :visible="!!resolvedId"
+                                :pane-active="!isMobile || mobilePane === 'live'"
+                            />
+                            <div v-if="segments.length" class="ai-session-segments">
+                                <span v-for="seg in segments" :key="seg.id" class="ai-segment-chip">
+                                    {{ seg.host_name || seg.host_address }}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="terminal-sidebar" :class="{ 'pane-mobile-active': !isMobile || mobilePane === 'ai' }">
+                            <AiChatPanel
+                                :ai-session-id="resolvedId"
+                                :visible="true"
+                                :pane-active="!isMobile || mobilePane === 'ai'"
+                                :title="title"
+                            />
                         </div>
                     </div>
                 </div>
@@ -2201,7 +3768,7 @@ const appOptions = {
                 };
 
                 const mobileLeftTabLabel = computed(() => (
-                    activeLeftPane.value === 'live' ? '实时现场' : '终端'
+                    activeLeftPane.value === 'live' ? '现场' : '终端'
                 ));
 
                 onMounted(() => {
@@ -2381,7 +3948,7 @@ const appOptions = {
                                     @click="setActiveLeftPane('live')"
                                 >
                                     <span class="live-lamp terminal-live-lamp" :class="{ live: liveOnline }"><i></i></span>
-                                    实时现场
+                                    现场
                                 </button>
                                 <button
                                     type="button"
@@ -3286,7 +4853,7 @@ const appOptions = {
                 <div class="panel live-layout">
                     <div class="live-head">
                         <div>
-                            <h2>实时窗口</h2>
+                            <h2>实时现场</h2>
                             <span class="live-lamp" :class="{ live: lampLive }"><i></i>{{ lampText }}</span>
                         </div>
                         <div class="live-head-actions">
@@ -3376,14 +4943,6 @@ const appOptions = {
                 const total = ref(0);
                 const page = ref(1);
                 const perPage = 10;
-                const replayOpen = ref(false);
-                const replayTitle = ref('');
-                const replayMeta = ref('');
-                const replayLoading = ref(false);
-                const replayError = ref('');
-                const replayHost = ref(null);
-                let replayPlayer = null;
-                let replayAbort = false;
 
                 const load = async () => {
                     const data = await api.get('/api/sessions?page=' + page.value + '&per_page=' + perPage);
@@ -3391,100 +4950,14 @@ const appOptions = {
                     total.value = data.total;
                 };
 
-                const disposePlayer = () => {
-                    if (replayPlayer) {
-                        try {
-                            replayPlayer.dispose();
-                        } catch (_) {}
-                        replayPlayer = null;
-                    }
-                    if (replayHost.value) {
-                        replayHost.value.innerHTML = '';
-                    }
-                };
-
-                const closeReplay = () => {
-                    replayAbort = true;
-                    disposePlayer();
-                    replayOpen.value = false;
-                    replayLoading.value = false;
-                    replayError.value = '';
-                };
-
-                const waitForPlayerEnd = (player) => new Promise((resolve) => {
-                    const onEnded = () => {
-                        player.removeEventListener('ended', onEnded);
-                        resolve();
-                    };
-                    player.addEventListener('ended', onEnded);
-                });
-
-                const playRecordingParts = async (parts, manifest) => {
-                    if (!replayHost.value || typeof AsciinemaPlayer === 'undefined') {
-                        throw new Error('回放组件未加载');
-                    }
-
-                    for (let index = 0; index < parts.length; index++) {
-                        if (replayAbort) {
-                            return;
-                        }
-
-                        disposePlayer();
-                        replayMeta.value = parts.length > 1
-                            ? ('分片 ' + (index + 1) + ' / ' + parts.length)
-                            : '';
-
-                        replayPlayer = AsciinemaPlayer.create(parts[index].url, replayHost.value, {
-                            cols: manifest.cols || 80,
-                            rows: manifest.rows || 24,
-                            autoPlay: true,
-                            preload: true,
-                            speed: 1,
-                            fit: 'both',
-                            theme: 'asciinema',
-                            controls: true,
-                        });
-
-                        await waitForPlayerEnd(replayPlayer);
-                    }
-                };
-
-                const openReplay = async (item) => {
-                    if (!item.recording_url) {
-                        return;
-                    }
-
-                    replayAbort = false;
-                    replayOpen.value = true;
-                    replayLoading.value = true;
-                    replayError.value = '';
-                    replayTitle.value = (item.host_name || item.host_address || ('会话 #' + item.id));
-                    replayMeta.value = '加载回放...';
-
-                    try {
-                        const data = await api.get('/api/sessions/' + item.id + '/recording');
-                        const parts = data.parts || [];
-                        const manifest = data.manifest || {};
-                        if (!parts.length) {
-                            throw new Error('没有可用的回放分片');
-                        }
-
-                        replayLoading.value = false;
-                        await nextTick();
-                        await playRecordingParts(parts, manifest);
-                        if (!replayAbort) {
-                            replayMeta.value = '回放结束';
-                        }
-                    } catch (error) {
-                        replayError.value = error.message || '加载回放失败';
-                        replayMeta.value = '';
-                    } finally {
-                        replayLoading.value = false;
-                    }
-                };
+                const replay = createAsciinemaReplay();
+                const field = createSessionFieldView();
 
                 onMounted(load);
-                onBeforeUnmount(closeReplay);
+                onBeforeUnmount(() => {
+                    replay.closeReplay();
+                    field.closeField();
+                });
 
                 return {
                     items,
@@ -3492,21 +4965,32 @@ const appOptions = {
                     page,
                     perPage,
                     load,
-                    replayOpen,
-                    replayTitle,
-                    replayMeta,
-                    replayLoading,
-                    replayError,
-                    replayHost,
-                    openReplay,
-                    closeReplay,
+                    replayOpen: replay.replayOpen,
+                    replayTitle: replay.replayTitle,
+                    replayMeta: replay.replayMeta,
+                    replayHostLabel: replay.replayHostLabel,
+                    replaySegmentInfo: replay.replaySegmentInfo,
+                    replayLoading: replay.replayLoading,
+                    replayError: replay.replayError,
+                    replayHost: replay.replayHost,
+                    openReplay: replay.openSessionReplay,
+                    closeReplay: replay.closeReplay,
+                    openField: field.openSessionField,
+                    closeField: field.closeField,
+                    fieldOpen: field.fieldOpen,
+                    fieldTitle: field.fieldTitle,
+                    fieldHostLabel: field.fieldHostLabel,
+                    fieldMeta: field.fieldMeta,
+                    fieldLoading: field.fieldLoading,
+                    fieldError: field.fieldError,
+                    fieldHost: field.fieldHost,
                 };
             },
             template: `
                 <div class="panel">
                     <h2>会话记录</h2>
                     <table>
-                        <thead><tr><th>用户</th><th>主机</th><th>状态</th><th>开始</th><th>结束</th><th>时长</th><th>回放</th><th>错误</th></tr></thead>
+                        <thead><tr><th>用户</th><th>主机</th><th>状态</th><th>开始</th><th>结束</th><th>时长</th><th>现场</th><th>回放</th><th>错误</th></tr></thead>
                         <tbody>
                             <tr v-for="item in items" :key="item.id">
                                 <td>{{ item.username }}</td>
@@ -3520,13 +5004,22 @@ const appOptions = {
                                         v-if="item.recording_url"
                                         type="button"
                                         class="btn-link"
+                                        @click="openField(item)"
+                                    >查看</button>
+                                    <span v-else>-</span>
+                                </td>
+                                <td>
+                                    <button
+                                        v-if="item.recording_url"
+                                        type="button"
+                                        class="btn-link"
                                         @click="openReplay(item)"
                                     >回放</button>
                                     <span v-else>-</span>
                                 </td>
                                 <td>{{ item.error_message || '-' }}</td>
                             </tr>
-                            <tr v-if="!items.length"><td colspan="8">暂无会话记录</td></tr>
+                            <tr v-if="!items.length"><td colspan="9">暂无会话记录</td></tr>
                         </tbody>
                     </table>
                     <div class="pagination">
@@ -3540,7 +5033,10 @@ const appOptions = {
                             <div class="replay-head">
                                 <div>
                                     <h3>会话回放 · {{ replayTitle }}</h3>
-                                    <p>{{ replayMeta }}</p>
+                                    <div class="replay-subline">
+                                        <span v-if="replayHostLabel" class="replay-host-badge" :title="replayHostLabel">{{ replayHostLabel }}</span>
+                                        <span class="replay-status">{{ replayMeta }}</span>
+                                    </div>
                                 </div>
                                 <button type="button" class="replay-close" @click="closeReplay">关闭</button>
                             </div>
@@ -3548,6 +5044,26 @@ const appOptions = {
                                 <div v-if="replayLoading" class="live-empty">正在加载回放...</div>
                                 <div v-else-if="replayError" class="message err">{{ replayError }}</div>
                                 <div ref="replayHost" class="replay-host"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="fieldOpen" class="replay-overlay" @click.self="closeField">
+                        <div class="replay-dialog">
+                            <div class="replay-head">
+                                <div>
+                                    <h3>现场 · {{ fieldTitle }}</h3>
+                                    <div class="replay-subline">
+                                        <span v-if="fieldHostLabel" class="replay-host-badge" :title="fieldHostLabel">{{ fieldHostLabel }}</span>
+                                        <span class="replay-status">{{ fieldMeta }}</span>
+                                    </div>
+                                </div>
+                                <button type="button" class="replay-close" @click="closeField">关闭</button>
+                            </div>
+                            <div class="replay-body">
+                                <div v-if="fieldLoading" class="live-empty">正在加载现场...</div>
+                                <div v-else-if="fieldError" class="message err">{{ fieldError }}</div>
+                                <div ref="fieldHost" class="field-host"></div>
                             </div>
                         </div>
                     </div>
@@ -3602,5 +5118,11 @@ appOptions.components.TerminalWorkspace.components = {
     TerminalPane: appOptions.components.TerminalPane,
     LiveSessionPane: appOptions.components.LiveSessionPane,
     AiChatPanel: appOptions.components.AiChatPanel,
+    AiToolCallCard,
+};
+appOptions.components.AiSessionWorkspace.components = {
+    AiChatPanel: appOptions.components.AiChatPanel,
+    AiSessionLivePane: appOptions.components.AiSessionLivePane,
+    AiToolCallCard,
 };
 createApp(appOptions).mount('#app');
