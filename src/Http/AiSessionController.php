@@ -312,8 +312,17 @@ final class AiSessionController
             return $denied;
         }
 
+        if (!$this->settings->aiSessionResetEnabled()) {
+            return $this->fail('AI 会话重置未启用，请在 .env 设置 AI_SESSION_RESET_ENABLED=true', 403);
+        }
+
         try {
             $id = $this->routeSessionId($request);
+            $username = RequestAuth::username($request);
+            $lockKey = $this->chat->lockKey($username, $id);
+            $this->streamSession->requestManualStop($lockKey);
+            $this->streamSession->clear($lockKey);
+            $this->locks->release($lockKey);
             $this->execBridge->closeSession($id);
 
             return $this->ok([

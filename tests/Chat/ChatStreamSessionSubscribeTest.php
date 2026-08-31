@@ -64,6 +64,20 @@ final class ChatStreamSessionSubscribeTest extends TestCase
         self::assertSame([], $session->eventsSince($key, 0));
     }
 
+    public function testClearRemovesBufferedStreamState(): void
+    {
+        $session = new ChatStreamSession();
+        $key = 'clear-key';
+
+        $session->begin($key, '15', 'hello');
+        $session->append($key, 'delta', ['text' => 'Hi']);
+        $session->clear($key);
+
+        self::assertFalse($session->isSubscribeAllowed($key));
+        self::assertSame([], $session->eventsSince($key, 0));
+        self::assertNull($session->getMeta($key));
+    }
+
     public function testGetMetaExposesActiveGeneration(): void
     {
         $session = new ChatStreamSession();

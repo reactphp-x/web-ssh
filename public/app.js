@@ -2491,6 +2491,27 @@ const appOptions = {
                         }));
                 };
 
+                const applyToolCallsFromBootstrap = (payload) => {
+                    syncToolCallsFromTimeline();
+                    if (toolCalls.value.length) {
+                        return;
+                    }
+                    if (Array.isArray(payload?.tool_calls) && payload.tool_calls.length) {
+                        toolCalls.value = normalizeToolCalls(payload.tool_calls);
+                    }
+                };
+
+                const resetTurnUiState = () => {
+                    messages.value = [];
+                    toolCalls.value = [];
+                    toolCallsOpen.value = false;
+                    approval.value = null;
+                    feedback.value = null;
+                    resetFeedbackForm();
+                    errorText.value = '';
+                    generationActive.value = false;
+                };
+
                 const findToolTarget = (data) => {
                     const callId = data.callId || null;
                     if (callId) {
@@ -2624,6 +2645,7 @@ const appOptions = {
                 let subscribeReplayState = null;
                 const configured = ref(false);
                 const enabled = ref(true);
+                const sessionResetEnabled = ref(false);
                 const approval = ref(null);
                 const feedback = ref(null);
                 const feedbackAnswers = ref({});
@@ -2824,19 +2846,26 @@ const appOptions = {
                     }
                 };
 
+                let bootstrapSeq = 0;
+
                 const bootstrap = async (options = {}) => {
                     if (!threadReady.value) return;
+                    const seq = ++bootstrapSeq;
                     try {
                         const res = await fetch(chatApi.value.bootstrap, {
                             credentials: 'same-origin',
                         });
                         const json = await res.json();
+                        if (seq !== bootstrapSeq) {
+                            return;
+                        }
                         if (json.code !== 0) {
                             errorText.value = json.msg || 'AI 初始化失败';
                             return;
                         }
                         configured.value = !!json.data?.configured;
                         enabled.value = json.data?.enabled !== false;
+                        sessionResetEnabled.value = !!json.data?.session_reset_enabled;
                         if (Array.isArray(json.data?.timeline) && json.data.timeline.length) {
                             messages.value = json.data.timeline.map(normalizeTimelineItem);
                         } else {
@@ -2849,9 +2878,9 @@ const appOptions = {
                                 stopped: !!m.stopped,
                             }));
                         }
-                        syncToolCallsFromTimeline();
-                        if (!toolCalls.value.length) {
-                            toolCalls.value = normalizeToolCalls(json.data?.tool_calls);
+                        applyToolCallsFromBootstrap(json.data);
+                        if (seq !== bootstrapSeq) {
+                            return;
                         }
                         approval.value = json.data?.approval || null;
                         feedback.value = json.data?.feedback || null;
@@ -3190,7 +3219,9 @@ const appOptions = {
                 };
 
                 const composerDisabled = computed(() => {
-                    if (busy.value || generationActive.value || !configured.value || !!approval.value || !!feedback.value) return true;
+                    if (busy.value || generationActive.value || !configured.value || !!approval.value || !!feedback.value) {
+                        return true;
+                    }
                     if (isSessionMode.value) return false;
                     return !props.connected;
                 });
@@ -3205,15 +3236,34 @@ const appOptions = {
 
                 const resetChat = async () => {
                     if (!threadReady.value || busy.value) return;
+                    if (isSessionMode.value && !sessionResetEnabled.value) return;
+                    subscribeAbortController?.abort();
                     const body = isSessionMode.value ? {} : { conn_id: props.connId };
-                    await postJson(chatApi.value.reset, body);
+                    const hadActiveGeneration = generationActive.value;
+                    try {
+                        if (hadActiveGeneration) {
+                            await postJson(chatApi.value.stop, body);
+                        }
+                        const res = await postJson(chatApi.value.reset, body);
+                        const json = await res.json();
+                        if (json.code !== 0) {
+                            errorText.value = json.msg || '重置失败';
+                            return;
+                        }
+                    } catch (e) {
+                        errorText.value = e.message || '重置失败';
+                        return;
+                    }
+                    generationActive.value = false;
+                    streamEventIndex.value = 0;
                     messages.value = [];
                     toolCalls.value = [];
                     toolCallsOpen.value = false;
                     approval.value = null;
                     feedback.value = null;
                     resetFeedbackForm();
-                    await bootstrap();
+                    errorText.value = '';
+                    await bootstrap({ skipGenerationResume: true });
                 };
 
                 const onComposerKeydown = (event) => {
@@ -3265,6 +3315,7 @@ const appOptions = {
                     stopEnabled,
                     configured,
                     enabled,
+                    sessionResetEnabled,
                     approval,
                     feedback,
                     feedbackAnswers,
@@ -3308,7 +3359,12 @@ const appOptions = {
                         </div>
                         <div class="actions">
                             <button type="button" @click="stopGeneration" :disabled="!stopEnabled">停止</button>
-                            <button type="button" @click="resetChat" :disabled="busy || generationActive">重置</button>
+                            <button
+                                v-if="!isSessionMode || sessionResetEnabled"
+                                type="button"
+                                @click="resetChat"
+                                :disabled="busy"
+                            >重置</button>
                         </div>
                     </div>
                     <Teleport to="body">

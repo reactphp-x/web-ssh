@@ -120,6 +120,16 @@ final class ChatStreamSession
         return $meta !== null && ($meta['active'] ?? false) === true;
     }
 
+    public function clear(string $sessionKey): void
+    {
+        $this->closeScope($sessionKey);
+        $this->unregisterScope($sessionKey);
+        unset(self::$memoryMeta[$sessionKey], self::$memoryEvents[$sessionKey]);
+        $this->clearStopFlag($sessionKey);
+        $this->clearRedisEvents($sessionKey);
+        $this->clearRedisMeta($sessionKey);
+    }
+
     public function finish(string $sessionKey): void
     {
         $this->unregisterScope($sessionKey);

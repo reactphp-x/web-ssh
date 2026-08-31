@@ -19,6 +19,14 @@ final class ChatSettings
         return filter_var($this->environment->string('AI_ENABLED', 'true'), FILTER_VALIDATE_BOOL);
     }
 
+    public function aiSessionResetEnabled(): bool
+    {
+        return filter_var(
+            $this->environment->string('AI_SESSION_RESET_ENABLED', 'false'),
+            FILTER_VALIDATE_BOOL,
+        );
+    }
+
     public function isConfigured(): bool
     {
         return $this->isEnabled() && $this->apiKey() !== '';

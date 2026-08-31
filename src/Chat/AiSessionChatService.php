@@ -78,6 +78,7 @@ final class AiSessionChatService
             'approval' => $this->loadApproval($aiSessionId),
             'feedback' => $this->loadFeedback($aiSessionId),
             'generation' => $this->streamSession->getMeta($lockKey),
+            'session_reset_enabled' => $this->settings->aiSessionResetEnabled(),
             'urls' => [
                 'stream' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream',
                 'subscribe' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream/subscribe',
@@ -229,18 +230,43 @@ final class AiSessionChatService
 
     public function reset(int $aiSessionId): string
     {
-        $directory = $this->settings->aiSessionStoragePath();
-        if (is_dir($directory)) {
-            foreach (glob($directory . DIRECTORY_SEPARATOR . '*' . $aiSessionId . '*') ?: [] as $file) {
-                @unlink($file);
-            }
-        }
+        $this->deleteChatArtifacts($aiSessionId);
         try {
             $this->workflowPersistence()->delete($this->workflowResumeToken($aiSessionId));
         } catch (Throwable) {
         }
 
         return $this->threadKey($aiSessionId) . '-' . time();
+    }
+
+    private function deleteChatArtifacts(int $aiSessionId): void
+    {
+        $paths = $this->settings->aiSessionStoragePaths();
+        $createdAt = $this->sessionCreatedAt($aiSessionId);
+
+        $chatFile = $paths->chatDirectory($aiSessionId, $createdAt)
+            . DIRECTORY_SEPARATOR
+            . 'neuron_'
+            . $aiSessionId
+            . '.chat';
+        if (is_file($chatFile)) {
+            @unlink($chatFile);
+        }
+
+        $liveLog = $paths->liveLogPath($aiSessionId, $createdAt);
+        if (is_file($liveLog)) {
+            @unlink($liveLog);
+        }
+
+        $base = rtrim($this->settings->aiSessionStoragePath(), '/');
+        $legacyChat = $base . '/neuron_' . $aiSessionId . '.chat';
+        if (is_file($legacyChat)) {
+            @unlink($legacyChat);
+        }
+        $legacyLive = $base . '/live/' . $aiSessionId . '.log';
+        if (is_file($legacyLive)) {
+            @unlink($legacyLive);
+        }
     }
 
     /**
@@ -777,19 +803,24 @@ final class AiSessionChatService
 
     private function fileHistory(int $aiSessionId): ChatFileHistory
     {
-        $createdAt = null;
-        try {
-            $session = await($this->aiSessions->findById($aiSessionId));
-            $createdAt = is_array($session) ? ($session['created_at'] ?? null) : null;
-        } catch (Throwable) {
-            $createdAt = null;
-        }
+        $createdAt = $this->sessionCreatedAt($aiSessionId);
 
         return new ChatFileHistory(
             directory: $this->settings->aiSessionStoragePaths()->chatDirectory($aiSessionId, $createdAt),
             key: (string) $aiSessionId,
             contextWindow: $this->settings->contextWindow(),
         );
+    }
+
+    private function sessionCreatedAt(int $aiSessionId): ?string
+    {
+        try {
+            $session = await($this->aiSessions->findById($aiSessionId));
+
+            return is_array($session) ? ($session['created_at'] ?? null) : null;
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function workflowPersistence(): FilePersistence
