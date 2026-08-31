@@ -509,7 +509,7 @@ const createAsciinemaReplay = () => {
 
     const closeReplay = () => {
         replayAbort = true;
-        disposePlayer();
+        prepareReplayHost();
         replayOpen.value = false;
         replayLoading.value = false;
         replayError.value = '';
@@ -517,39 +517,150 @@ const createAsciinemaReplay = () => {
         replaySegmentInfo.value = '';
     };
 
-    const fetchCastDurationSec = async (url) => {
+    const prepareReplayHost = () => {
+        disposePlayer();
+        if (replayHost.value) {
+            replayHost.value.innerHTML = '';
+        }
+    };
+
+    const fetchCastText = async (url) => {
+        const res = await fetch(url, { credentials: 'same-origin' });
+        if (!res.ok) {
+            throw new Error('加载录像失败');
+        }
+        return res.text();
+    };
+
+    const parseCastRecording = (text) => {
+        const lines = text.trim().split('\n');
+        if (lines.length < 2) {
+            return { header: null, events: [], duration: 0 };
+        }
+
+        let startIndex = 1;
         try {
-            const res = await fetch(url, { credentials: 'same-origin' });
-            if (!res.ok) {
-                return 0;
+            const header = JSON.parse(lines[0]);
+            if (header?.version === 1) {
+                startIndex = 2;
             }
-            const text = await res.text();
-            const lines = text.trim().split('\n');
-            let last = 0;
-            for (let i = 2; i < lines.length; i++) {
+        } catch (_) {
+            startIndex = 1;
+        }
+
+        const events = [];
+        let duration = 0;
+        for (let i = startIndex; i < lines.length; i++) {
+            try {
+                const row = JSON.parse(lines[i]);
+                if (Array.isArray(row) && typeof row[0] === 'number') {
+                    events.push(row);
+                    duration = Math.max(duration, row[0]);
+                }
+            } catch (_) {
+                // skip malformed cast lines
+            }
+        }
+
+        return { header: lines[0], events, duration };
+    };
+
+    const loadSegmentCast = async (segment, segmentLabel) => {
+        const manifestData = await api.get(segment.recording.manifest_url);
+        const parts = manifestData.parts || [];
+        const manifest = manifestData.manifest || {};
+        if (!parts.length) {
+            return null;
+        }
+
+        let header = null;
+        const events = [];
+        let offset = 0;
+
+        for (const part of parts) {
+            const parsed = parseCastRecording(await fetchCastText(part.url));
+            if (!parsed.events.length) {
+                continue;
+            }
+            if (!header) {
+                header = parsed.header;
+            }
+            for (const row of parsed.events) {
+                events.push([row[0] + offset, row[1], row[2]]);
+            }
+            offset += parsed.duration + 0.3;
+        }
+
+        if (!header || !events.length) {
+            return null;
+        }
+
+        return {
+            header,
+            events,
+            duration: offset,
+            manifest,
+            label: segmentLabel,
+        };
+    };
+
+    const mergeSegmentCasts = (segments, gapSec = 0.6) => {
+        let header = null;
+        const mergedEvents = [];
+        const boundaries = [];
+        let offset = 0;
+        let cols = 80;
+        let rows = 40;
+
+        for (const segment of segments) {
+            if (!segment) {
+                continue;
+            }
+            if (!header) {
+                header = segment.header;
                 try {
-                    const row = JSON.parse(lines[i]);
-                    if (Array.isArray(row) && typeof row[0] === 'number') {
-                        last = Math.max(last, row[0]);
-                    }
+                    const parsedHeader = JSON.parse(header);
+                    cols = parsedHeader.width || cols;
+                    rows = parsedHeader.height || rows;
                 } catch (_) {
-                    // skip malformed cast lines
+                    // keep defaults
                 }
             }
-            return last;
+
+            boundaries.push({ start: offset, label: segment.label });
+            for (const row of segment.events) {
+                mergedEvents.push([row[0] + offset, row[1], row[2]]);
+            }
+            offset += segment.duration + gapSec;
+        }
+
+        if (!header || !mergedEvents.length) {
+            return null;
+        }
+
+        return {
+            mergedText: header + '\n' + mergedEvents.map((row) => JSON.stringify(row)).join('\n'),
+            totalDuration: offset,
+            boundaries,
+            cols,
+            rows,
+        };
+    };
+
+    const fetchCastDurationSec = async (url) => {
+        try {
+            return parseCastRecording(await fetchCastText(url)).duration;
         } catch (_) {
             return 0;
         }
     };
 
-    const waitForPlaybackEnd = (player, durationHint = 0) => new Promise((resolve, reject) => {
+    const waitForPlaybackEnd = (player, durationHint = 0) => new Promise((resolve) => {
         let settled = false;
         let pollTimer = null;
         let fallbackTimer = null;
 
         const cleanup = () => {
-            player.removeEventListener('ended', onEnded);
-            player.removeEventListener('playing', onPlaying);
             if (pollTimer) {
                 clearInterval(pollTimer);
                 pollTimer = null;
@@ -557,6 +668,11 @@ const createAsciinemaReplay = () => {
             if (fallbackTimer) {
                 clearTimeout(fallbackTimer);
                 fallbackTimer = null;
+            }
+            try {
+                player.removeEventListener('ended', finish);
+            } catch (_) {
+                // ignore listener cleanup errors
             }
         };
 
@@ -569,55 +685,27 @@ const createAsciinemaReplay = () => {
             resolve();
         };
 
-        const fail = (err) => {
-            if (settled) {
-                return;
-            }
-            settled = true;
-            cleanup();
-            reject(err);
-        };
+        const safeHint = durationHint > 0
+            ? Math.min(Math.max(durationHint, 0.5), 600)
+            : 30;
+        fallbackTimer = setTimeout(finish, Math.ceil((safeHint + 1) * 1000));
 
-        const scheduleFallback = (seconds) => {
-            if (fallbackTimer || !(seconds > 0)) {
-                return;
-            }
-            fallbackTimer = setTimeout(finish, Math.ceil((seconds + 1.5) * 1000));
-        };
-
-        const onEnded = () => finish();
-        const onPlaying = () => {
-            const dur = player.getDuration?.();
-            if (typeof dur === 'number' && dur > 0) {
-                scheduleFallback(dur);
-            }
-        };
-
-        player.addEventListener('ended', onEnded);
-        player.addEventListener('playing', onPlaying);
+        player.addEventListener('ended', finish);
 
         pollTimer = setInterval(() => {
             try {
                 const dur = player.getDuration?.();
                 const cur = player.getCurrentTime?.();
-                if (typeof dur === 'number' && dur > 0 && typeof cur === 'number' && cur >= dur - 0.15) {
+                if (typeof dur === 'number' && dur > 0 && typeof cur === 'number' && cur >= dur - 0.2) {
                     finish();
                 }
             } catch (_) {
                 // ignore polling errors
             }
         }, 200);
-
-        scheduleFallback(durationHint);
-        setTimeout(finish, 600000);
-
-        const playResult = player.play?.();
-        if (playResult && typeof playResult.then === 'function') {
-            playResult.catch(fail);
-        }
     });
 
-    const playCastUrl = async (url, manifest, statusLabel) => {
+    const playCastSource = async (source, manifest, statusLabel, durationHint = 0, boundaries = []) => {
         if (replayAbort) {
             return;
         }
@@ -625,16 +713,31 @@ const createAsciinemaReplay = () => {
             throw new Error('回放组件未加载');
         }
 
-        const durationHint = await fetchCastDurationSec(url);
-
-        disposePlayer();
+        prepareReplayHost();
         await nextTick();
         if (replayAbort || !replayHost.value) {
             return;
         }
 
         replayMeta.value = statusLabel + ' · 播放中';
-        replayPlayer = AsciinemaPlayer.create(url, replayHost.value, {
+        const boundaryTimers = boundaries.map((boundary) => setTimeout(() => {
+            if (replayAbort) {
+                return;
+            }
+            replayMeta.value = boundary.label + ' · 播放中';
+            const hostLabel = String(boundary.label).split(' · ').pop();
+            if (hostLabel) {
+                replayHostLabel.value = hostLabel;
+            }
+            if (boundaries.length > 1) {
+                const index = boundaries.indexOf(boundary);
+                if (index >= 0) {
+                    replaySegmentInfo.value = '分段 ' + (index + 1) + ' / ' + boundaries.length;
+                }
+            }
+        }, Math.max(0, boundary.start * 1000)));
+
+        replayPlayer = AsciinemaPlayer.create(source, replayHost.value, {
             cols: manifest.cols || 80,
             rows: manifest.rows || 40,
             autoPlay: true,
@@ -643,10 +746,19 @@ const createAsciinemaReplay = () => {
             fit: 'both',
             theme: 'asciinema',
             controls: true,
-            idleTimeLimit: 86400,
+            idleTimeLimit: 2,
         });
 
-        await waitForPlaybackEnd(replayPlayer, durationHint);
+        try {
+            await waitForPlaybackEnd(replayPlayer, durationHint);
+        } finally {
+            boundaryTimers.forEach((timer) => clearTimeout(timer));
+        }
+    };
+
+    const playCastUrl = async (url, manifest, statusLabel) => {
+        const durationHint = await fetchCastDurationSec(url);
+        await playCastSource(url, manifest, statusLabel, durationHint);
     };
 
     const playRecordingParts = async (parts, manifest, segmentLabel = '') => {
@@ -708,6 +820,7 @@ const createAsciinemaReplay = () => {
         replayTitle.value = item.title || ('AI 会话 #' + item.id);
         replayMeta.value = '加载回放...';
 
+        let blobUrl = null;
         try {
             const data = await api.get('/api/ai/sessions/' + item.id + '/recording');
             const allSegments = data.data?.segments || [];
@@ -716,61 +829,78 @@ const createAsciinemaReplay = () => {
                 throw new Error('该 AI 会话没有可用的回放录像');
             }
 
-            replayLoading.value = false;
-            await nextTick();
-
-            let played = 0;
+            const loadedSegments = [];
             let skipped = 0;
-            const missing = allSegments.length - recordable.length;
-
             for (let index = 0; index < recordable.length; index++) {
-                if (replayAbort) {
-                    return;
-                }
-
                 const segment = recordable[index];
                 const hostLabel = formatReplayHostLabel(segment);
                 const order = Number.isFinite(segment.order) ? segment.order + 1 : (index + 1);
-                replayHostLabel.value = hostLabel;
-                replaySegmentInfo.value = allSegments.length > 1
-                    ? ('分段 ' + order + ' / ' + allSegments.length)
-                    : '';
                 const segmentLabel = allSegments.length > 1
                     ? ('分段 ' + order + ' / ' + allSegments.length + ' · ' + hostLabel)
                     : hostLabel;
-
                 try {
-                    const manifestData = await api.get(segment.recording.manifest_url);
-                    const parts = manifestData.parts || [];
-                    const manifest = manifestData.manifest || {};
-                    if (!parts.length) {
+                    const loaded = await loadSegmentCast(segment, segmentLabel);
+                    if (!loaded) {
                         skipped += 1;
                         continue;
                     }
-                    await playRecordingParts(parts, manifest, segmentLabel);
-                    played += 1;
-                    if (!replayAbort) {
-                        await new Promise((resolve) => setTimeout(resolve, 400));
-                    }
-                } catch (segmentError) {
+                    loadedSegments.push(loaded);
+                } catch (_) {
                     skipped += 1;
-                    if (!replayAbort) {
-                        replayMeta.value = segmentLabel + ' · 跳过（' + (segmentError.message || '加载失败') + '）';
-                    }
-                    await new Promise((resolve) => setTimeout(resolve, 600));
                 }
             }
 
+            if (!loadedSegments.length) {
+                throw new Error('该 AI 会话没有可用的回放录像');
+            }
+
+            replayLoading.value = false;
+            await nextTick();
+
+            if (loadedSegments.length === 1) {
+                const only = loadedSegments[0];
+                blobUrl = URL.createObjectURL(new Blob([
+                    only.header + '\n' + only.events.map((row) => JSON.stringify(row)).join('\n'),
+                ], { type: 'application/x-asciicast' }));
+                replayHostLabel.value = formatReplayHostLabel(recordable[0]);
+                replaySegmentInfo.value = allSegments.length > 1 ? ('分段 1 / ' + allSegments.length) : '';
+                await playCastSource(
+                    blobUrl,
+                    only.manifest,
+                    only.label,
+                    only.duration,
+                );
+            } else {
+                const merged = mergeSegmentCasts(loadedSegments);
+                if (!merged) {
+                    throw new Error('合并回放失败');
+                }
+                blobUrl = URL.createObjectURL(new Blob([merged.mergedText], { type: 'application/x-asciicast' }));
+                replayHostLabel.value = formatReplayHostLabel(recordable[0]);
+                replaySegmentInfo.value = '分段 1 / ' + loadedSegments.length;
+                await playCastSource(
+                    blobUrl,
+                    { cols: merged.cols, rows: merged.rows },
+                    merged.boundaries[0]?.label || '播放中',
+                    merged.totalDuration,
+                    merged.boundaries,
+                );
+            }
+
             if (!replayAbort) {
+                const missing = allSegments.length - recordable.length;
                 const extras = missing + skipped;
                 replayMeta.value = extras > 0
-                    ? ('回放结束 · 已播放 ' + played + ' 段，' + extras + ' 段无录像或跳过')
-                    : ('回放结束 · 已播放 ' + played + ' 段');
+                    ? ('回放结束 · 已播放 ' + loadedSegments.length + ' 段，' + extras + ' 段无录像或跳过')
+                    : ('回放结束 · 已播放 ' + loadedSegments.length + ' 段');
             }
         } catch (error) {
             replayError.value = error.message || '加载回放失败';
             replayMeta.value = '';
         } finally {
+            if (blobUrl) {
+                URL.revokeObjectURL(blobUrl);
+            }
             replayLoading.value = false;
         }
     };
