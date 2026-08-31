@@ -17,7 +17,7 @@
 
 1. 在浏览器里打开终端，无需安装本地 SSH 客户端
 2. 集中管理主机与加密存储的凭据，支持跳板机一键连接
-3. 可选 **AI 助手**：描述任务 → 审核命令 → 自动执行并继续推理
+3. 可选 **AI 助手**（单主机）或 **AI 编排**（跨主机）：描述任务 → 审核命令 → 自动 exec 并继续推理
 4. **现场**查看单次会话输出，**实时现场**监控多路连接；结束后可现场滚动查看或 asciinema 回放
 5. 通过 Basic Auth + TOTP 双因子、速率限制与 Cookie 策略控制访问
 
@@ -29,7 +29,8 @@
 |---|---|
 | **主机管理** | SQLite 存储主机、分组、标签；密码/私钥加密保存，支持跳板机 |
 | **Web 终端** | xterm.js 多标签 **PTY**，OpenSSH 子进程连接远端；支持 TUI（vim、htop、Claude Code 等） |
-| **AI 助手** | 终端页侧栏；自然语言描述任务，**批准后才执行** `run_ssh_command` |
+| **AI 助手** | 终端页侧栏；绑定单主机 `conn_id`，自然语言描述任务，**批准后才执行**命令 |
+| **AI 编排** | 独立跨主机会话（`#/ai`）；无需先开终端，`list_hosts` 选机、`run_ssh_command` 分段 exec，左侧 **现场** 持久化输出 |
 | **现场** | 终端页 / AI 编排页左栏：查看当前会话输出（手动输入 + AI 命令）；AI 编排支持持久化 transcript，刷新后可恢复 |
 | **实时现场** | 左侧菜单 `#/live`：多路 SSE 旁路监控**进行中**的 SSH 连接（只读，不可输入） |
 | **会话记录** | 连接起止、状态、耗时；自动写入 asciinema cast（`storage/recordings/`） |
@@ -290,34 +291,15 @@ docker compose up --build
 4. 进入 **终端** 建立 SSH 会话；主机列表 **登录** 默认左侧为交互终端，**AI 助手** 进入同一终端页但默认左侧为 **现场**
 5. 终端页右侧 **AI 助手**（需配置 `NEURON_AI_KEY`）可描述运维任务；**左侧顶部**可切换 **现场 / 终端**（终端可手动输入）
 6. 菜单 **实时现场** 可旁路监控多路连接；**会话记录** 中可 **现场** 滚动查看或 **回放** 已结束的录像
+7. 侧边栏 **AI 编排**（`#/ai`）可新建跨主机会话：描述任务 → AI 选机并提议命令 → 审核后在远端 exec，无需先打开 Web 终端
 
 未登录访问 `/` 会重定向到 `/login`；点击 **退出** 清除登录与 2FA Cookie。
 
-## AI 助手
+## AI 助手（终端页）
 
-SSH 连接成功后，终端页右侧出现 **AI 助手** 侧栏（移动端为「现场 | AI 助手」或「终端 | AI 助手」标签切换）。从 **主机管理** 点击 **AI 助手** 进入**同一终端页**，默认左侧为 **现场**，右侧为 AI 对话；可在**左侧顶部**切换为 **交互终端** 并手动输入。
+适用于**已打开某台主机 Web 终端**时的单主机运维辅助。SSH 连接成功后，终端页右侧出现 **AI 助手** 侧栏（移动端为「现场 | AI 助手」或「终端 | AI 助手」标签切换）。从 **主机管理** 点击 **AI 助手** 进入**同一终端页**，默认左侧为 **现场**，右侧为 AI 对话；可在**左侧顶部**切换为 **交互终端** 并手动输入。
 
-### 独立 AI 编排（跨主机）
-
-侧边栏 **AI 编排**（`#/ai`）提供不绑定单主机的编排会话：
-
-- **一个会话 = 一个聊天 thread**（`ai_session_id`），可在多台主机间切换执行
-- AI 通过 `list_hosts` 自动选机，`run_ssh_command(host_id, …)` 需人工批准
-- 左侧 **现场** 显示当前分段命令输出；切换主机时新开 **segment**（独立录像）
-- 输出持久化到 `storage/neuron/ai-sessions/live/{id}.log`，刷新页面或 SSE 重连后可恢复
-- **历史会话**（`#/ai/sessions`）可继续对话；**现场** 查看完整 transcript，**回放** 按分段 manifest 顺序播放
-
-与终端页 AI 并存：终端 AI 绑定 `conn_id`（单主机 PTY）；编排 AI 绑定 `ai_session_id`（exec 通道，无需先打开终端）。
-
-```text
-GET  /api/ai/sessions
-POST /api/ai/sessions
-GET  /api/ai/sessions/{id}/bootstrap
-POST /api/ai/sessions/{id}/chat/stream
-GET  /api/ai/sessions/{id}/live/stream      # SSE，含 replay 事件
-GET  /api/ai/sessions/{id}/live/transcript  # 持久化现场文本
-GET  /api/ai/sessions/{id}/recording
-```
+绑定 **`conn_id`**（WebSocket `connected` 消息中的 `_id`），复用当前 SSH 连接的凭据与 exec 通道。
 
 ### 工作流程
 
@@ -330,23 +312,9 @@ GET  /api/ai/sessions/{id}/recording
 4. 批准后通过 **独立 SSH exec** 执行；输出回传 AI 继续推理（可多轮）
 5. 点击 **工具调用** 可展开查看每次工具的参数与返回（消息 timeline 与工具卡片交错展示）
 
-### 配置
-
-```env
-AI_ENABLED=true
-NEURON_AI_KEY=sk-...
-NEURON_AI_MODEL=gpt-4o-mini
-# NEURON_AI_PROVIDER=openai
-# NEURON_AI_BASE_URL=https://api.deepseek.com/v1
-NEURON_AI_HTTP_TIMEOUT=120
-AI_COMMAND_TIMEOUT=30
-NEURON_AI_TOOL_MAX_RUNS=30    # 单轮对话工具调用上限（默认 30）
-REDIS_URL=127.0.0.1:6379      # HTTP_WORKERS>1 时建议配置
-```
-
 ### API
 
-均需 Basic Auth + 2FA。`conn_id` 为 WebSocket `connected` 消息中的 `_id`，与当前 SSH 会话绑定。
+均需 Basic Auth + 2FA。
 
 ```text
 GET  /api/ai/bootstrap?conn_id={conn_id}
@@ -364,6 +332,140 @@ POST /api/ai/chat/reset            { conn_id }
 - AI exec 每次为**新 shell 进程**，工作目录/环境可能与交互 PTY 不一致（例如在 PTY 里 `cd` 后，AI 仍可能从 home 执行）
 - 不支持交互式命令（vim、top、mysql 客户端等）；请在左侧 PTY 终端手动操作
 - 仅 `run_ssh_command` 会触发待审核；只读工具自动执行
+
+## AI 编排
+
+**AI 编排**是独立于 Web 终端的跨主机运维模式：在浏览器里描述任务，由 AI 从平台主机列表中选目标、提议 shell 命令，你审核后自动 SSH exec 执行，并可在多台机器间切换继续推理。**无需先打开某台主机的交互终端**。
+
+典型场景：
+
+- 批量巡检多台服务器（磁盘、负载、服务状态）
+- 在 A 机查日志、B 机改配置、C 机重启服务的串联任务
+- 离开页面后从历史会话继续，或回看命令输出
+
+### 与终端 AI 助手的区别
+
+| | **终端 AI 助手** | **AI 编排** |
+|---|---|---|
+| 入口 | 主机管理 → **AI 助手** / 终端页侧栏 | 侧边栏 **AI 编排** |
+| 路由 | `#/terminal/{hostId}/…` | `#/ai`、`#/ai/session/{id}`、`#/ai/sessions` |
+| 绑定键 | `conn_id`（须先 WebSocket 连上该主机） | `ai_session_id`（独立会话） |
+| 选主机 | 固定为当前终端主机 | `list_hosts` 动态选择，可跨主机切换 |
+| 左侧 **现场** | 含手动 PTY 输出 + AI 命令 | 仅 AI 命令输出（按 segment 分段） |
+| 现场持久化 | 连接期间 SSE；历史靠会话录像 | live log + transcript，刷新可恢复 |
+| 录像 | 单次 SSH 会话一条 | 每个主机 segment 独立录像，回放按段顺序播放 |
+| Agent | `SshAgent` | `OrchestratorAgent` |
+
+### 页面与路由
+
+| 路由 | 说明 |
+|---|---|
+| `#/ai` | 新建编排会话入口 |
+| `#/ai/session/{id}` | 进行中的编排会话（左 **现场** + 右 AI 对话） |
+| `#/ai/sessions` | 历史会话列表：继续 / **现场** / **回放** |
+
+**PC 布局**：左侧 **现场**（命令输出）与右侧 AI 对话之间可**拖动分隔线**调整宽度，比例保存在浏览器 `localStorage`。
+
+**移动端**：「现场 | AI 对话」标签切换，无分栏拖动。
+
+### 核心概念
+
+```mermaid
+flowchart LR
+    AS["ai_session<br/>编排会话"] --> SEG1["segment #1<br/>host A"]
+    AS --> SEG2["segment #2<br/>host B"]
+    SEG1 --> REC1["recording<br/>session_id"]
+    SEG2 --> REC2["recording<br/>session_id"]
+    AS --> LOG["live transcript<br/>{id}.log"]
+    SEG1 --> SSE["现场 SSE"]
+    SEG2 --> SSE
+```
+
+| 概念 | 说明 |
+|---|---|
+| **ai_session** | 一次编排对话 thread，对应 SQLite `ai_sessions` 表与聊天文件 `storage/neuron/ai-sessions/neuron_{id}.chat` |
+| **segment** | 在某台主机上的一段 exec 生命周期；切换 `host_id` 时结束旧 segment、开启新 segment |
+| **live_key** | segment 对应的 SSE 旁路键，供 **现场** 实时推送 |
+| **live transcript** | 编排会话全部命令输出的持久化文本，路径 `storage/neuron/ai-sessions/live/{id}.log` |
+| **segment 录像** | 每个 segment 对应一条 `sessions` 记录（`session_type=ai_exec`），写入 `storage/recordings/{session_id}/` |
+
+切换主机时，左侧 **现场** 会插入主机分隔线；各 segment 的 shell 环境**相互独立**（cwd、环境变量不共享）。
+
+### 工作流程
+
+1. 侧边栏进入 **AI 编排**，点击 **新建会话**（或从历史列表 **继续**）
+2. 在右侧输入任务，例如：「检查 web-01 和 web-02 的 nginx 是否在运行」
+3. AI 调用工具（见下表）；遇到 **`run_ssh_command`** 时在底部 **批准 / 拒绝**
+4. 批准后 `SshExecBridge` 对该 `host_id` 建立（或复用）exec 连接并执行；输出写入左侧 **现场** 与 live log
+5. AI 根据输出继续推理，可切换主机执行下一条命令，直至任务完成
+6. 刷新 `#/ai/session/{id}` 后，**现场** 通过 SSE `replay` 事件或 transcript API 恢复；聊天 timeline 含工具卡片
+
+### 编排工具
+
+| 工具 | 需审核 | 说明 |
+|---|---|---|
+| **`list_hosts`** | 否 | 列出平台已保存主机（id、名称、地址），供 AI 选择目标 |
+| **`get_command_context`** | 否 | 读取本编排会话中，某主机上最近 AI 命令输出 |
+| **`run_ssh_command`** | **是** | 在指定 `host_id` 上执行一条 shell 命令；参数含 `command`、`reason` |
+| **`ask_user`** | 否 | 需求不明确时向用户弹出选项（单选/多选） |
+
+> 编排模式下 **`run_ssh_command` 必须带 `host_id`**；终端 AI 则固定在当前 `conn_id` 对应主机上执行。
+
+### 现场、回放与历史
+
+| 操作 | 入口 | 数据来源 |
+|---|---|---|
+| 实时看命令输出 | `#/ai/session/{id}` 左侧 **现场** | SSE `/live/stream`（含 `replay`） |
+| 刷新后恢复现场 | 同上 | live log；若无 log 则从 segment 录像回填 |
+| 历史滚动查看 | `#/ai/sessions` → **现场** | `GET /live/transcript` |
+| 按时间轴回放 | `#/ai/sessions` → **回放** | 各 segment 的 asciinema manifest 顺序播放 |
+
+AI 命令在现场中以 `[AI] $ command` / `[AI] exit N` 标记；切换主机时有 `────────── 主机 · … ──────────` 分隔。
+
+### API
+
+均需 Basic Auth + 2FA。路径中的 `{id}` 为 `ai_session_id`。
+
+```text
+GET  /api/ai/sessions                              # 分页列表
+POST /api/ai/sessions                              # 新建 { title? }
+GET  /api/ai/sessions/{id}                         # 会话详情 + segments
+GET  /api/ai/sessions/{id}/bootstrap               # 聊天 bootstrap（含 timeline）
+POST /api/ai/sessions/{id}/chat/stream             { message }
+POST /api/ai/sessions/{id}/approval/stream         { approved: 1|0 }
+POST /api/ai/sessions/{id}/feedback/stream         { answers: {} }
+POST /api/ai/sessions/{id}/stop
+POST /api/ai/sessions/{id}/reset
+GET  /api/ai/sessions/{id}/live/stream             # 现场 SSE（replay / output / segment_switch）
+GET  /api/ai/sessions/{id}/live/transcript         # 持久化现场文本
+GET  /api/ai/sessions/{id}/recording               # 各 segment 录像 manifest 汇总
+```
+
+创建、命令批准/拒绝等操作写入 **操作日志**（如 `ai.session.created`、`ai.command.approved`）。
+
+### 说明与限制
+
+- **无需 Web 终端**：编排 exec 由服务端直接 `openssh` 连接，不占用浏览器 WebSocket PTY
+- **每次 exec 是新 shell**：与终端 AI 相同，不要假设 `cd` 或 export 会跨命令保留；需要时用绝对路径或一条命令写完
+- **禁止交互式命令**：vim、top、mysql、ssh 等会被拒绝；TUI 请在 Web 终端 PTY 中手动操作
+- **主机须预先录入**：只能对 **主机管理** 中已配置的主机执行；AI 通过 `list_hosts` 获取列表
+- **单用户隔离**：会话按登录用户名隔离，只能访问自己的 `ai_session`
+
+## AI 配置（共用）
+
+终端 **AI 助手** 与 **AI 编排** 共用以下环境变量（须设置 `NEURON_AI_KEY`）：
+
+```env
+AI_ENABLED=true
+NEURON_AI_KEY=sk-...
+NEURON_AI_MODEL=gpt-4o-mini
+# NEURON_AI_PROVIDER=openai
+# NEURON_AI_BASE_URL=https://api.deepseek.com/v1
+NEURON_AI_HTTP_TIMEOUT=120
+AI_COMMAND_TIMEOUT=30
+NEURON_AI_TOOL_MAX_RUNS=30    # 单轮对话工具调用上限（默认 30）
+REDIS_URL=127.0.0.1:6379      # HTTP_WORKERS>1 时建议配置
+```
 
 ## 现场与实时现场
 
