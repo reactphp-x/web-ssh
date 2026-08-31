@@ -59,6 +59,7 @@ final class DatabaseMigrator
             $this->upgradeHostsTable($database);
             $this->upgradeTwoFactorTables($database);
             $this->upgradeAiSessionTables($database);
+            $this->upgradeAiProfilesTable($database);
 
             foreach ($statements as $statement) {
                 $database->exec($statement);
@@ -187,6 +188,55 @@ final class DatabaseMigrator
 
         $database->exec('CREATE INDEX IF NOT EXISTS idx_sessions_ai_session_id ON sessions (ai_session_id)');
         $database->exec('CREATE INDEX IF NOT EXISTS idx_sessions_session_type ON sessions (session_type)');
+    }
+
+    private function upgradeAiProfilesTable(\SQLite3 $database): void
+    {
+        $database->exec(
+            'CREATE TABLE IF NOT EXISTS ai_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                config_json TEXT NOT NULL DEFAULT \'{}\',
+                encrypted_secrets TEXT NOT NULL DEFAULT \'\',
+                is_selected INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT NOT NULL DEFAULT \'\',
+                UNIQUE (name)
+            )',
+        );
+        $database->exec('CREATE INDEX IF NOT EXISTS idx_ai_profiles_selected ON ai_profiles (is_selected)');
+
+        $hasLegacy = $database->querySingle(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ai_settings' LIMIT 1",
+        );
+        if ($hasLegacy !== 1) {
+            return;
+        }
+
+        $hasProfiles = (int) $database->querySingle('SELECT COUNT(*) FROM ai_profiles');
+        if ($hasProfiles > 0) {
+            return;
+        }
+
+        $result = $database->query('SELECT config_json, encrypted_secrets, active, updated_at, updated_by FROM ai_settings WHERE id = 1 LIMIT 1');
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        $result->finalize();
+        if (!is_array($row)) {
+            return;
+        }
+
+        $stmt = $database->prepare(
+            'INSERT INTO ai_profiles (name, config_json, encrypted_secrets, is_selected, updated_at, updated_by)
+             VALUES (?, ?, ?, ?, ?, ?)',
+        );
+        $stmt->bindValue(1, '默认');
+        $stmt->bindValue(2, (string) ($row['config_json'] ?? '{}'));
+        $stmt->bindValue(3, (string) ($row['encrypted_secrets'] ?? ''));
+        $stmt->bindValue(4, (int) ($row['active'] ?? 0) === 1 ? 1 : 0);
+        $stmt->bindValue(5, (string) ($row['updated_at'] ?? date('c')));
+        $stmt->bindValue(6, (string) ($row['updated_by'] ?? ''));
+        $stmt->execute();
     }
 
     /**

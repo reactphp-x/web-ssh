@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http;
 
 use App\Service\AuditService;
+use App\Chat\AiSettingsStore;
 use App\Chat\ChatException;
 use App\Chat\ChatService;
 use App\Chat\ChatSettings;
@@ -29,6 +30,7 @@ final class AiChatController
     public function __construct(
         private readonly ChatService $chat,
         private readonly ChatSettings $settings,
+        private readonly AiSettingsStore $aiSettingsStore,
         private readonly ThreadLock $locks,
         private readonly ChatStreamSession $streamSession,
         private readonly SshSessionBridge $bridge,
@@ -67,7 +69,7 @@ final class AiChatController
                 return $this->fail('请输入要说的话', 400);
             }
             if (!$this->settings->isConfigured()) {
-                return $this->fail('请先在 .env 填写 NEURON_AI_KEY。', 400);
+                return $this->fail('请先在侧栏「AI 设置」中配置 API Key。', 400);
             }
         } catch (ChatException $e) {
             return $this->fail($e->getMessage(), 400, $e->data);
@@ -186,6 +188,8 @@ final class AiChatController
 
     private function deny(): ?ResponseInterface
     {
+        $this->aiSettingsStore->loadSync();
+
         if (!$this->settings->isEnabled()) {
             return $this->fail('AI 助手未启用', 503);
         }

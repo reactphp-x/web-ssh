@@ -288,7 +288,7 @@ final class ChatService
             throw new ChatException('AI 助手未启用。');
         }
         if (!$this->settings->isConfigured()) {
-            throw new ChatException('请先在 .env 填写 NEURON_AI_KEY。');
+            throw new ChatException('请先在侧栏「AI 设置」中配置 API Key。');
         }
 
         $this->ensureDirectories();

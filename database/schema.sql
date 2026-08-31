@@ -140,3 +140,17 @@ CREATE TABLE IF NOT EXISTS auth_rate_limits (
 
 INSERT OR IGNORE INTO host_groups (id, name, created_by)
 VALUES (1, '默认分组', 'system');
+
+CREATE TABLE IF NOT EXISTS ai_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    encrypted_secrets TEXT NOT NULL DEFAULT '',
+    is_selected INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_by TEXT NOT NULL DEFAULT '',
+    UNIQUE (name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_profiles_selected ON ai_profiles (is_selected);

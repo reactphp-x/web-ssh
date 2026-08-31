@@ -14,7 +14,9 @@ use App\Middleware\TwoFactorAuthHandler;
 use App\Recording\SessionRecordingConfig;
 use App\Recording\SessionRecorder;
 use App\Http\AiSessionController;
+use App\Http\AiSettingsController;
 use App\Repository\AiSessionRepository;
+use App\Repository\AiSettingsRepository;
 use App\Repository\AuditLogRepository;
 use App\Repository\AuthRateLimitRepository;
 use App\Repository\HostGroupRepository;
@@ -25,13 +27,16 @@ use App\Repository\TwoFactorSessionRepository;
 use App\Security\BasicAuthCookie;
 use App\Security\SecretCipher;
 use App\Security\TwoFactorCookie;
+use App\Service\AiSettingsService;
 use App\Service\AuditService;
 use App\Service\AuthRateLimiter;
 use App\Service\HostService;
 use App\Service\SessionService;
 use App\Service\SshProbeService;
 use App\Service\TwoFactorService;
+use App\Chat\AiSettingsEnvImporter;
 use App\Chat\AiSessionChatService;
+use App\Chat\AiSettingsStore;
 use App\Chat\ChatService;
 use App\Chat\ChatSettings;
 use App\Chat\ChatStreamSession;
@@ -81,6 +86,10 @@ final class WebAppFactory
         $sessions = new SessionRepository($db);
         $aiSessionRepo = new AiSessionRepository($db);
         $auditLogs = new AuditLogRepository($db);
+        $aiSettingsRepo = new AiSettingsRepository($db);
+        $aiSettingsStore = new AiSettingsStore($dbConfig, $cipher);
+        (new AiSettingsEnvImporter($env, $dbConfig, $cipher))->importIfEmpty();
+        $aiSettingsStore->loadSync();
         $twoFactorRepo = new TwoFactorRepository($db, $cipher);
         $twoFactorSessions = new TwoFactorSessionRepository($db);
         $authRateLimits = new AuthRateLimitRepository($db);
@@ -139,7 +148,9 @@ final class WebAppFactory
         $logger = $logManager->channel();
 
         $redisPool = self::redisPool($env);
-        $chatSettings = new ChatSettings($env);
+        $chatSettings = new ChatSettings($env, $aiSettingsStore);
+        $aiSettingsService = new AiSettingsService($env, $dbConfig, $cipher, $aiSettingsStore, $aiSettingsRepo);
+        $aiSettings = new AiSettingsController($aiSettingsService, $audit);
         $chatStreamSession = new ChatStreamSession($redisPool);
         $stoppedTurnWriter = new StoppedTurnWriter();
         $chatService = new ChatService(
@@ -153,6 +164,7 @@ final class WebAppFactory
         $aiChat = new AiChatController(
             $chatService,
             $chatSettings,
+            $aiSettingsStore,
             new ThreadLock($redisPool),
             $chatStreamSession,
             $sessionBridge,
@@ -174,6 +186,7 @@ final class WebAppFactory
             $aiSessionChat,
             $aiSessionRepo,
             $chatSettings,
+            $aiSettingsStore,
             new ThreadLock($redisPool),
             $chatStreamSession,
             $execBridge,
@@ -241,6 +254,15 @@ final class WebAppFactory
         $app->get('/api/sessions/{id:\d+}/recording', static fn (ServerRequestInterface $request) => $recording->manifest($request));
         $app->get('/api/sessions/{id:\d+}/recording/{part:part-\d+\.cast}', static fn (ServerRequestInterface $request) => $recording->part($request));
         $app->get('/api/audit-logs', static fn (ServerRequestInterface $request) => $api->listAuditLogs($request));
+
+        $app->get('/api/settings/ai', static fn () => $aiSettings->show());
+        $app->get('/api/settings/ai/profiles/{id:\d+}', static fn (ServerRequestInterface $request) => $aiSettings->showProfile($request));
+        $app->post('/api/settings/ai/profiles', static fn (ServerRequestInterface $request) => $aiSettings->create($request));
+        $app->put('/api/settings/ai/profiles/{id:\d+}', static fn (ServerRequestInterface $request) => $aiSettings->update($request));
+        $app->delete('/api/settings/ai/profiles/{id:\d+}', static fn (ServerRequestInterface $request) => $aiSettings->delete($request));
+        $app->post('/api/settings/ai/profiles/{id:\d+}/select', static fn (ServerRequestInterface $request) => $aiSettings->select($request));
+        $app->post('/api/settings/ai/test', static fn (ServerRequestInterface $request) => $aiSettings->test($request));
+        $app->post('/api/settings/ai/models', static fn (ServerRequestInterface $request) => $aiSettings->models($request));
 
         $app->get('/api/live/sessions', static fn (ServerRequestInterface $request) => $live->listSessions($request));
         $app->get('/api/live/sessions/{id:[a-f0-9]+}/stream', static fn (ServerRequestInterface $request) => $live->streamSession($request));

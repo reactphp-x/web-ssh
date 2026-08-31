@@ -8,7 +8,7 @@ use App\Chat\ChatSettings;
 use App\Neuron\Agent\Middleware\SshCommandApprovalPrep;
 use App\Neuron\Agent\ProvidesSummarizationMiddleware;
 use App\Neuron\Agent\Middleware\UserFeedback;
-use App\Neuron\HttpClient\ReactHttpClient;
+use App\Neuron\Agent\ResolvesConfiguredProvider;
 use App\Neuron\Tools\AskUserTool;
 use App\Neuron\Tools\GetTerminalContextTool;
 use App\Neuron\Tools\RunSshCommandTool;
@@ -20,13 +20,11 @@ use NeuronAI\Agent\Nodes\ToolNode;
 use NeuronAI\Agent\SystemPrompt;
 use NeuronAI\HttpClient\HttpClientInterface;
 use NeuronAI\Providers\AIProviderInterface;
-use NeuronAI\Providers\Deepseek\Deepseek;
-use NeuronAI\Providers\OpenAI\OpenAI;
-use NeuronAI\Providers\OpenAILike;
 
 final class SshAgent extends Agent
 {
     use ProvidesSummarizationMiddleware;
+    use ResolvesConfiguredProvider;
 
     private ?ChatSettings $settings = null;
 
@@ -57,34 +55,7 @@ final class SshAgent extends Agent
 
     protected function provider(): AIProviderInterface
     {
-        $settings = $this->requireSettings();
-        $http = $this->http ?? new ReactHttpClient(timeout: $settings->httpTimeout());
-        $key = $settings->apiKey();
-        $model = $settings->model();
-        $base = $settings->baseUri();
-
-        if ($base !== '') {
-            return new OpenAILike(
-                baseUri: $base,
-                key: $key,
-                model: $model,
-                httpClient: $http,
-            );
-        }
-
-        if ($settings->provider() === 'deepseek' && class_exists(Deepseek::class)) {
-            return new Deepseek(
-                key: $key,
-                model: $model,
-                httpClient: $http,
-            );
-        }
-
-        return new OpenAI(
-            key: $key,
-            model: $model,
-            httpClient: $http,
-        );
+        return $this->resolveConfiguredProvider();
     }
 
     protected function instructions(): string

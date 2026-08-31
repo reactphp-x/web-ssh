@@ -173,6 +173,11 @@
             padding: 16px;
         }
 
+        .panel.ai-settings-panel {
+            max-width: 680px;
+            margin: 0 auto;
+        }
+
         .toolbar {
             display: flex;
             gap: 8px;
@@ -226,7 +231,122 @@
             gap: 12px;
         }
 
+        .form-grid input:not([type="checkbox"]):not([type="radio"]),
+        .form-grid select,
+        .form-grid textarea {
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .form-grid input[type="checkbox"],
+        .form-grid input[type="radio"] {
+            width: auto;
+            margin: 0;
+        }
+
+        .form-grid label.checkbox-label,
+        .form-grid .hint label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            width: auto;
+        }
+
         .form-grid .full { grid-column: 1 / -1; }
+
+        .model-input-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .model-input-row input,
+        .model-input-row select {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .model-input-row select.model-select {
+            width: 100%;
+        }
+
+        .model-input-row button {
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        .ai-active-bar {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+            padding: 12px 14px;
+            margin-bottom: 16px;
+            background: #1a2030;
+            border: 1px solid #3a4254;
+            border-radius: 8px;
+        }
+
+        .ai-active-profile {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: auto;
+        }
+
+        .ai-active-profile select {
+            min-width: 180px;
+        }
+
+        .ai-profile-tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .ai-profile-tab {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border: 1px solid #3a4254;
+            border-radius: 999px;
+            background: #1a2030;
+            color: #c5d0de;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .ai-profile-tab:hover:not(:disabled) {
+            border-color: #5b8def;
+            color: #fff;
+        }
+
+        .ai-profile-tab.editing {
+            border-color: #5b8def;
+            background: rgba(91, 141, 239, 0.12);
+            color: #fff;
+            box-shadow: 0 0 0 1px #5b8def inset;
+        }
+
+        .ai-profile-tab:disabled {
+            opacity: 0.6;
+            cursor: wait;
+        }
+
+        .ai-profile-add {
+            border-style: dashed;
+            color: #8aa0b8;
+        }
+
+        .ai-profile-badge {
+            font-size: 11px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            background: rgba(62, 207, 142, 0.2);
+            color: #3ecf8e;
+        }
 
         .key-source-tabs {
             display: flex;

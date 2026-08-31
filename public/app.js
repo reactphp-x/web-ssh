@@ -64,6 +64,14 @@ const parseRoute = () => {
             mode: null,
         };
     }
+    if (parts[0] === 'settings' && parts[1] === 'ai') {
+        return {
+            name: 'ai-settings',
+            id: null,
+            nonce: null,
+            mode: null,
+        };
+    }
     return {
         name: parts[0] || 'hosts',
         id: parts[1] ? Number(parts[1]) : null,
@@ -1209,6 +1217,7 @@ const appOptions = {
             if (name === 'live') return 'live';
             if (name === 'sessions') return 'sessions';
             if (name === 'audit-logs') return 'audit';
+            if (name === 'ai-settings') return 'ai-settings';
             if (name === 'hosts' && id !== null) return 'host-form';
             return 'hosts';
         });
@@ -1349,6 +1358,9 @@ const appOptions = {
                     <a href="#/audit-logs" title="操作日志" :class="{ active: currentView === 'audit' }" @click="closeMobileNav">
                         <span class="nav-icon">志</span><span class="nav-label">操作日志</span>
                     </a>
+                    <a href="#/settings/ai" title="AI 设置" :class="{ active: currentView === 'ai-settings' }" @click="closeMobileNav">
+                        <span class="nav-icon">AI</span><span class="nav-label">AI 设置</span>
+                    </a>
                 </nav>
             </aside>
             <main class="main">
@@ -1364,6 +1376,7 @@ const appOptions = {
                 <HostFormView v-else-if="currentView === 'host-form'" :host-id="editingHostId" @flash="setFlash" />
                 <SessionListView v-else-if="currentView === 'sessions'" />
                 <AuditLogView v-else-if="currentView === 'audit'" />
+                <AiSettingsView v-else-if="currentView === 'ai-settings'" @flash="setFlash" />
                 <TerminalWorkspace
                     v-show="currentView === 'terminal'"
                     :visible="currentView === 'terminal'"
@@ -3511,7 +3524,7 @@ const appOptions = {
                     <div v-if="!isSessionMode && !connected" class="ai-chat-hint">SSH 连接成功后可用</div>
                     <div v-else-if="isSessionMode && !threadReady" class="ai-chat-hint">正在加载 AI 会话…</div>
                     <div v-else-if="!enabled" class="ai-chat-hint">AI 助手未启用</div>
-                    <div v-else-if="!configured" class="ai-chat-hint">请在 .env 配置 NEURON_AI_KEY</div>
+                    <div v-else-if="!configured" class="ai-chat-hint">请在侧栏「AI 设置」中创建并启用 AI 配置</div>
                     <div class="ai-chat-body" ref="chatBodyRef">
                         <div ref="logRef" class="ai-chat-log">
                             <div v-if="!messages.length" class="ai-chat-empty">描述你想完成的任务，AI 会提议命令，你审核后执行。</div>
@@ -5699,6 +5712,447 @@ const appOptions = {
                         <span>第 {{ page }} 页 / 共 {{ Math.ceil(total / perPage) || 1 }} 页</span>
                         <button :disabled="page * perPage >= total" @click="page++; load()">下一页</button>
                     </div>
+                </div>
+            `,
+        },
+        AiSettingsView: {
+            emits: ['flash'],
+            setup(_props, { emit }) {
+                const loading = ref(true);
+                const saving = ref(false);
+                const testing = ref(false);
+                const loadingModels = ref(false);
+                const switching = ref(false);
+                const profiles = ref([]);
+                const configured = ref(false);
+                const selectedProfileId = ref(null);
+                const editingId = ref(null);
+                const providers = ref([]);
+                const modelOptions = ref([]);
+                const modelListMessage = ref('');
+                const modelManual = ref(false);
+                const aiEnabled = ref(false);
+                const secrets = reactive({ api_key_set: false, aws_access_key_set: false, aws_secret_key_set: false });
+                const showApiKey = ref(false);
+                const showAwsSecret = ref(false);
+
+                const defaultForm = () => ({
+                    name: '',
+                    provider: 'openai',
+                    model: 'gpt-4o-mini',
+                    api_key: '',
+                    keep_api_key: true,
+                    base_url: '',
+                    ollama_url: 'http://localhost:11434/api',
+                    anthropic_version: '2023-06-01',
+                    anthropic_max_tokens: 8192,
+                    azure_endpoint: '',
+                    azure_api_version: '2024-10-21',
+                    hf_inference_provider: 'hf-inference/models',
+                    aws_region: 'us-east-1',
+                    aws_access_key: '',
+                    aws_secret_key: '',
+                    keep_aws_access_key: true,
+                    keep_aws_secret_key: true,
+                    vertex_credentials: '',
+                    vertex_project: '',
+                    vertex_location: '',
+                    http_timeout: 120,
+                    command_timeout: 30,
+                    tool_max_runs: 30,
+                    context_window: 50000,
+                    summarization_enabled: true,
+                    summarization_max_tokens: '',
+                    summarization_keep: 5,
+                });
+
+                const form = reactive(defaultForm());
+                const isNew = computed(() => editingId.value === 'new');
+                const hasProfiles = computed(() => profiles.value.length > 0);
+
+                const needsBaseUrl = computed(() => {
+                    const p = form.provider;
+                    return p === 'openailike' || p === 'openailike-responses' || p === 'kimi';
+                });
+                const needsOllama = computed(() => form.provider === 'ollama');
+                const needsAnthropic = computed(() => form.provider === 'anthropic');
+                const needsAzure = computed(() => form.provider === 'azure');
+                const needsBedrock = computed(() => form.provider === 'bedrock');
+                const needsVertex = computed(() => ['gemini-vertex', 'anthropic-vertex'].includes(form.provider));
+                const needsHf = computed(() => form.provider === 'huggingface');
+
+                const applySettingsToForm = (name, s, sec) => {
+                    Object.assign(form, defaultForm(), {
+                        name: name || '',
+                        provider: s.provider || 'openai',
+                        model: s.model || 'gpt-4o-mini',
+                        base_url: s.base_url || '',
+                        ollama_url: s.ollama_url || 'http://localhost:11434/api',
+                        anthropic_version: s.anthropic_version || '2023-06-01',
+                        anthropic_max_tokens: s.anthropic_max_tokens ?? 8192,
+                        azure_endpoint: s.azure_endpoint || '',
+                        azure_api_version: s.azure_api_version || '2024-10-21',
+                        hf_inference_provider: s.hf_inference_provider || 'hf-inference/models',
+                        aws_region: s.aws_region || 'us-east-1',
+                        vertex_credentials: s.vertex_credentials || '',
+                        vertex_project: s.vertex_project || '',
+                        vertex_location: s.vertex_location || '',
+                        http_timeout: s.http_timeout ?? 120,
+                        command_timeout: s.command_timeout ?? 30,
+                        tool_max_runs: s.tool_max_runs ?? 30,
+                        context_window: s.context_window ?? 50000,
+                        summarization_enabled: !!s.summarization_enabled,
+                        summarization_max_tokens: s.summarization_max_tokens ?? '',
+                        summarization_keep: s.summarization_keep ?? 5,
+                        api_key: '',
+                        keep_api_key: true,
+                        aws_access_key: '',
+                        aws_secret_key: '',
+                        keep_aws_access_key: true,
+                        keep_aws_secret_key: true,
+                    });
+                    Object.assign(secrets, sec || {});
+                    modelOptions.value = [];
+                    modelListMessage.value = '';
+                    modelManual.value = false;
+                };
+
+                watch(() => form.provider, () => {
+                    modelOptions.value = [];
+                    modelListMessage.value = '';
+                    modelManual.value = false;
+                });
+
+                const applyIndex = async (data) => {
+                    configured.value = !!data.configured;
+                    selectedProfileId.value = data.selected_profile_id ?? null;
+                    profiles.value = data.profiles || [];
+                    providers.value = data.providers || [];
+                    aiEnabled.value = !!data.settings?.enabled;
+
+                    if (editingId.value === 'new') {
+                        return;
+                    }
+
+                    if (profiles.value.length === 0) {
+                        editingId.value = 'new';
+                        startNew();
+                        return;
+                    }
+
+                    const keepEditing = typeof editingId.value === 'number'
+                        && profiles.value.some((p) => p.id === editingId.value);
+                    const editId = keepEditing
+                        ? editingId.value
+                        : (selectedProfileId.value ?? profiles.value[0].id);
+                    await loadProfileForm(editId);
+                };
+
+                const loadProfileForm = async (id) => {
+                    const data = await api.get('/api/settings/ai/profiles/' + id);
+                    editingId.value = id;
+                    applySettingsToForm(data.name, data.settings || {}, data.secrets || {});
+                };
+
+                const load = async () => {
+                    loading.value = true;
+                    try {
+                        const data = await api.get('/api/settings/ai');
+                        await applyIndex(data);
+                    } catch (error) {
+                        emit('flash', error.message, 'err');
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const payload = () => ({ ...form, profile_id: typeof editingId.value === 'number' ? editingId.value : undefined });
+
+                const save = async () => {
+                    saving.value = true;
+                    try {
+                        let data;
+                        if (isNew.value) {
+                            data = await api.post('/api/settings/ai/profiles', payload());
+                            editingId.value = data.selected_profile_id ?? editingId.value;
+                            emit('flash', '已创建 AI 配置', 'ok');
+                        } else if (typeof editingId.value === 'number') {
+                            data = await api.put('/api/settings/ai/profiles/' + editingId.value, payload());
+                            emit('flash', 'AI 配置已保存', 'ok');
+                        }
+                        if (data) await applyIndex(data);
+                    } catch (error) {
+                        emit('flash', error.message, 'err');
+                    } finally {
+                        saving.value = false;
+                    }
+                };
+
+                const testConnection = async () => {
+                    testing.value = true;
+                    try {
+                        const result = await api.post('/api/settings/ai/test', payload());
+                        emit('flash', result.message, result.success ? 'ok' : 'err');
+                    } catch (error) {
+                        emit('flash', error.message, 'err');
+                    } finally {
+                        testing.value = false;
+                    }
+                };
+
+                const fetchModels = async () => {
+                    loadingModels.value = true;
+                    modelListMessage.value = '';
+                    try {
+                        const result = await api.post('/api/settings/ai/models', payload());
+                        if (result.models?.length) {
+                            modelOptions.value = result.models;
+                            modelManual.value = false;
+                            if (!form.model || !result.models.includes(form.model)) {
+                                form.model = result.models[0];
+                            }
+                        } else {
+                            modelOptions.value = [];
+                        }
+                        modelListMessage.value = result.message || '';
+                        if (!result.success) {
+                            emit('flash', result.message || '获取模型列表失败', 'err');
+                        }
+                    } catch (error) {
+                        modelOptions.value = [];
+                        modelListMessage.value = error.message;
+                        emit('flash', error.message, 'err');
+                    } finally {
+                        loadingModels.value = false;
+                    }
+                };
+
+                const toggleAiEnabled = async () => {
+                    if (!selectedProfileId.value) {
+                        aiEnabled.value = false;
+                        return;
+                    }
+                    const profile = profiles.value.find((p) => p.id === selectedProfileId.value);
+                    switching.value = true;
+                    try {
+                        const data = await api.put('/api/settings/ai/profiles/' + selectedProfileId.value, {
+                            name: profile?.name || form.name || '默认',
+                            enabled: aiEnabled.value,
+                            keep_api_key: true,
+                            keep_aws_access_key: true,
+                            keep_aws_secret_key: true,
+                        });
+                        await applyIndex(data);
+                        emit('flash', aiEnabled.value ? 'AI 助手已启用' : 'AI 助手已关闭', 'ok');
+                    } catch (error) {
+                        aiEnabled.value = !aiEnabled.value;
+                        emit('flash', error.message, 'err');
+                    } finally {
+                        switching.value = false;
+                    }
+                };
+
+                const selectActiveProfile = async (id) => {
+                    if (!id || selectedProfileId.value === id) {
+                        return;
+                    }
+                    switching.value = true;
+                    try {
+                        const data = await api.post('/api/settings/ai/profiles/' + id + '/select', {});
+                        await applyIndex(data);
+                    } catch (error) {
+                        emit('flash', error.message, 'err');
+                    } finally {
+                        switching.value = false;
+                    }
+                };
+
+                const editProfile = async (id) => {
+                    if (editingId.value === id) {
+                        return;
+                    }
+                    await loadProfileForm(id);
+                };
+
+                const startNew = () => {
+                    editingId.value = 'new';
+                    applySettingsToForm('新配置', {
+                        provider: 'openai',
+                        model: 'gpt-4o-mini',
+                    }, {});
+                };
+
+                const removeProfile = async (id) => {
+                    const profile = profiles.value.find((p) => p.id === id);
+                    if (!confirm('确定删除配置「' + (profile?.name || id) + '」？')) {
+                        return;
+                    }
+                    switching.value = true;
+                    try {
+                        const data = await api.delete('/api/settings/ai/profiles/' + id);
+                        await applyIndex(data);
+                        emit('flash', '已删除 AI 配置', 'ok');
+                    } catch (error) {
+                        emit('flash', error.message, 'err');
+                    } finally {
+                        switching.value = false;
+                    }
+                };
+
+                onMounted(load);
+
+                return {
+                    loading, saving, testing, loadingModels, switching, profiles, configured, selectedProfileId, editingId,
+                    providers, secrets, form, isNew, hasProfiles, modelOptions, modelListMessage, modelManual, aiEnabled,
+                    showApiKey, showAwsSecret, needsBaseUrl, needsOllama, needsAnthropic,
+                    needsAzure, needsBedrock, needsVertex, needsHf,
+                    save, testConnection, fetchModels, toggleAiEnabled, selectActiveProfile, editProfile,
+                    startNew, removeProfile, loadProfileForm,
+                };
+            },
+            template: `
+                <div class="panel ai-settings-panel">
+                    <h2>AI 设置</h2>
+                    <p v-if="loading" class="hint">加载中…</p>
+                    <template v-else>
+                        <div class="ai-active-bar">
+                            <label class="checkbox-label">
+                                <input
+                                    type="checkbox"
+                                    v-model="aiEnabled"
+                                    :disabled="!hasProfiles || switching"
+                                    @change="toggleAiEnabled"
+                                >
+                                启用 AI 助手
+                            </label>
+                            <div v-if="hasProfiles && aiEnabled" class="ai-active-profile">
+                                <label>使用配置</label>
+                                <select
+                                    :value="selectedProfileId"
+                                    :disabled="switching"
+                                    @change="selectActiveProfile(Number($event.target.value))"
+                                >
+                                    <option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }}</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <p v-if="!hasProfiles" class="hint" style="margin-bottom:12px">
+                            尚未创建 AI 配置，请先添加一套 Provider 与 API Key。
+                        </p>
+
+                        <div class="ai-profile-tabs">
+                            <button
+                                v-for="p in profiles"
+                                :key="p.id"
+                                type="button"
+                                class="ai-profile-tab"
+                                :class="{ editing: editingId === p.id }"
+                                :disabled="switching"
+                                @click="editProfile(p.id)"
+                            >
+                                {{ p.name }}
+                            </button>
+                            <button type="button" class="ai-profile-tab ai-profile-add" :disabled="switching" @click="startNew">+ 新建</button>
+                        </div>
+
+                        <template v-if="isNew || typeof editingId === 'number'">
+                            <div class="form-grid">
+                                <div class="full">
+                                    <label>配置名称 *</label>
+                                    <input v-model="form.name" placeholder="如 Deepseek、Kimi">
+                                </div>
+                                <div class="full">
+                                    <label>Provider *</label>
+                                    <select v-model="form.provider">
+                                        <option v-for="p in providers" :key="p" :value="p">{{ p }}</option>
+                                    </select>
+                                </div>
+                                <div class="full">
+                                    <label>模型 *</label>
+                                    <div class="model-input-row">
+                                        <select v-if="modelOptions.length && !modelManual" v-model="form.model" class="model-select">
+                                            <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+                                        </select>
+                                        <input v-else v-model="form.model" placeholder="gpt-4o-mini">
+                                        <button type="button" @click="fetchModels" :disabled="loadingModels || saving || testing || switching">
+                                            {{ loadingModels ? '加载中…' : '拉取列表' }}
+                                        </button>
+                                    </div>
+                                    <p v-if="modelListMessage" class="hint">{{ modelListMessage }}</p>
+                                    <label v-if="modelOptions.length" class="hint checkbox-label">
+                                        <input type="checkbox" v-model="modelManual"> 手动输入模型名称
+                                    </label>
+                                </div>
+                                <div class="full">
+                                    <label>API Key {{ secrets.api_key_set ? '（已保存，留空保持不变）' : '*' }}</label>
+                                    <input v-model="form.api_key" :type="showApiKey ? 'text' : 'password'" placeholder="sk-...">
+                                    <label class="hint checkbox-label"><input type="checkbox" v-model="showApiKey"> 显示</label>
+                                </div>
+                                <div v-if="needsBaseUrl" class="full">
+                                    <label>Base URL *</label>
+                                    <input v-model="form.base_url" placeholder="https://api.example.com/v1">
+                                </div>
+                                <div v-if="needsOllama" class="full">
+                                    <label>Ollama URL</label>
+                                    <input v-model="form.ollama_url" placeholder="http://localhost:11434/api">
+                                </div>
+                                <template v-if="needsAnthropic">
+                                    <div><label>Anthropic Version</label><input v-model="form.anthropic_version"></div>
+                                    <div><label>Max Tokens</label><input v-model.number="form.anthropic_max_tokens" type="number" min="1"></div>
+                                </template>
+                                <template v-if="needsAzure">
+                                    <div class="full"><label>Azure Endpoint *</label><input v-model="form.azure_endpoint"></div>
+                                    <div><label>Azure API Version</label><input v-model="form.azure_api_version"></div>
+                                </template>
+                                <template v-if="needsBedrock">
+                                    <div><label>AWS Region</label><input v-model="form.aws_region"></div>
+                                    <div class="full">
+                                        <label>AWS Access Key {{ secrets.aws_access_key_set ? '（留空保持不变）' : '' }}</label>
+                                        <input v-model="form.aws_access_key" type="password">
+                                    </div>
+                                    <div class="full">
+                                        <label>AWS Secret Key {{ secrets.aws_secret_key_set ? '（留空保持不变）' : '' }}</label>
+                                        <input v-model="form.aws_secret_key" :type="showAwsSecret ? 'text' : 'password'">
+                                        <label class="hint checkbox-label"><input type="checkbox" v-model="showAwsSecret"> 显示</label>
+                                    </div>
+                                </template>
+                                <template v-if="needsVertex">
+                                    <div class="full"><label>Vertex 凭据 JSON 路径 *</label><input v-model="form.vertex_credentials"></div>
+                                    <div><label>Vertex Project *</label><input v-model="form.vertex_project"></div>
+                                    <div><label>Vertex Location</label><input v-model="form.vertex_location" placeholder="留空为 global"></div>
+                                </template>
+                                <div v-if="needsHf" class="full">
+                                    <label>HuggingFace Inference Provider</label>
+                                    <input v-model="form.hf_inference_provider">
+                                </div>
+                            </div>
+
+                            <details class="ai-settings-advanced">
+                                <summary>高级选项</summary>
+                                <div class="form-grid" style="margin-top:12px">
+                                    <div><label>HTTP 超时（秒）</label><input v-model.number="form.http_timeout" type="number" min="1" step="0.1"></div>
+                                    <div><label>命令超时（秒）</label><input v-model.number="form.command_timeout" type="number" min="5"></div>
+                                    <div><label>工具调用上限</label><input v-model.number="form.tool_max_runs" type="number" min="1"></div>
+                                    <div><label>上下文窗口（tokens）</label><input v-model.number="form.context_window" type="number" min="1000"></div>
+                                    <div class="full"><label class="checkbox-label"><input type="checkbox" v-model="form.summarization_enabled"> 启用对话总结</label></div>
+                                    <div><label>总结阈值（tokens，留空为 80%）</label><input v-model="form.summarization_max_tokens" type="number" min="0"></div>
+                                    <div><label>总结后保留消息数</label><input v-model.number="form.summarization_keep" type="number" min="1"></div>
+                                </div>
+                            </details>
+
+                            <div class="actions" style="margin-top:16px">
+                                <button class="primary" type="button" @click="save" :disabled="saving || testing || switching">{{ isNew ? '创建配置' : '保存' }}</button>
+                                <button type="button" @click="testConnection" :disabled="saving || testing || switching">测试连接</button>
+                                <button
+                                    v-if="!isNew && typeof editingId === 'number'"
+                                    type="button"
+                                    @click="removeProfile(editingId)"
+                                    :disabled="saving || testing || switching"
+                                >删除</button>
+                            </div>
+                        </template>
+                    </template>
                 </div>
             `,
         },
