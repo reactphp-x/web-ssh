@@ -29,6 +29,43 @@ final class ChatFileHistory extends FileChatHistory
         $this->updateFile();
     }
 
+    public function popLastMessage(): void
+    {
+        if ($this->history === []) {
+            return;
+        }
+
+        array_pop($this->history);
+        $this->updateFile();
+    }
+
+    public function replaceLastAssistantContent(string $content): void
+    {
+        $content = trim($content);
+        if ($content === '') {
+            return;
+        }
+
+        $messages = $this->getMessages();
+        if ($messages === []) {
+            return;
+        }
+
+        $last = $messages[array_key_last($messages)];
+        if (!$last instanceof \NeuronAI\Chat\Messages\AssistantMessage) {
+            return;
+        }
+
+        array_pop($this->history);
+        $assistant = new \NeuronAI\Chat\Messages\AssistantMessage($content);
+        $stopped = $last->getMetadata('stopped');
+        if ($stopped !== null) {
+            $assistant->addMetadata('stopped', $stopped);
+        }
+        $this->history[] = $assistant;
+        $this->updateFile();
+    }
+
     /**
      * @param list<object> $messages
      * @return list<object>

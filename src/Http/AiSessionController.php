@@ -27,6 +27,7 @@ use Throwable;
 
 use function React\Async\async;
 use function React\Async\await;
+use function React\Async\delay;
 
 final class AiSessionController
 {
@@ -233,6 +234,78 @@ final class AiSessionController
         return $this->ok(['stopped' => true, 'thread_key' => (string) $id]);
     }
 
+    public function subscribeStream(ServerRequestInterface $request): ResponseInterface
+    {
+        if ($denied = $this->deny()) {
+            return $denied;
+        }
+
+        try {
+            $id = $this->routeSessionId($request);
+            $input = $this->input($request);
+        } catch (ChatException $e) {
+            return $this->fail($e->getMessage(), 400, $e->data);
+        }
+
+        $username = RequestAuth::username($request);
+        $lockKey = $this->chat->lockKey($username, $id);
+        $fromIndex = max(0, (int) ($input['from_index'] ?? 0));
+        if (!$this->streamSession->isSubscribeAllowed($lockKey)) {
+            return $this->fail('没有进行中的生成', 404);
+        }
+        if ($this->streamSession->isManuallyStopped($lockKey)) {
+            return $this->fail('生成已被手动停止', 409);
+        }
+
+        $through = new ThroughStream();
+
+        Loop::futureTick(async(function () use ($through, $lockKey, $fromIndex): void {
+            $cursor = $fromIndex;
+            $pingAt = microtime(true);
+            $idleAttempts = 0;
+            try {
+                Sse::ping($through);
+                while ($through->isWritable()) {
+                    $finished = $this->flushStreamEvents($through, $lockKey, $cursor);
+                    if ($finished) {
+                        return;
+                    }
+
+                    if ($this->streamSession->isActive($lockKey)) {
+                        $idleAttempts = 0;
+                        if (microtime(true) - $pingAt >= 2.0) {
+                            Sse::ping($through);
+                            $pingAt = microtime(true);
+                        }
+                        delay(0.05);
+
+                        continue;
+                    }
+
+                    if ($this->streamSession->isStreamComplete($lockKey)) {
+                        $finished = $this->flushStreamEvents($through, $lockKey, $cursor);
+                        if ($finished) {
+                            return;
+                        }
+
+                        return;
+                    }
+
+                    $idleAttempts++;
+                    if ($idleAttempts > 40) {
+                        return;
+                    }
+                    delay(0.05);
+                }
+            } catch (Throwable) {
+            } finally {
+                Sse::end($through);
+            }
+        }));
+
+        return Sse::response($through);
+    }
+
     public function reset(ServerRequestInterface $request): ResponseInterface
     {
         if ($denied = $this->deny()) {
@@ -377,9 +450,6 @@ final class AiSessionController
 
         $through = new ThroughStream();
         $scope = new HttpStreamScope();
-        $through->on('close', static function () use ($scope): void {
-            $scope->closeAll();
-        });
 
         $threadKey = (string) $aiSessionId;
         $this->streamSession->begin($lockKey, $threadKey, $userMessage);
@@ -388,11 +458,10 @@ final class AiSessionController
         Loop::futureTick(async(function () use ($through, $scope, $lockKey, $run): void {
             $emit = function (string $event, array $data) use ($through, $lockKey): void {
                 $this->streamSession->append($lockKey, $event, $data);
-                if (!$through->isWritable()) {
-                    throw new ChatStopException('client disconnected');
+                if ($through->isWritable()) {
+                    $this->locks->heartbeat($lockKey);
+                    Sse::write($through, $event, $data);
                 }
-                $this->locks->heartbeat($lockKey);
-                Sse::write($through, $event, $data);
                 if ($this->streamSession->shouldStop($lockKey)) {
                     throw new ChatStopException('manual stop');
                 }
@@ -401,10 +470,12 @@ final class AiSessionController
                 $done = $run($emit, $scope);
                 $this->streamSession->append($lockKey, 'done', $done);
                 if ($through->isWritable()) {
+                    $this->locks->heartbeat($lockKey);
                     Sse::write($through, 'done', $done);
                 }
             } catch (Throwable $e) {
-                if ($through->isWritable() && $e->getMessage() !== 'client disconnected') {
+                $this->streamSession->append($lockKey, 'error', ['message' => $e->getMessage()]);
+                if ($through->isWritable()) {
                     $this->logAiError('stream', $e);
                     Sse::write($through, 'error', ['message' => $this->publicAiErrorMessage($e)]);
                 }
@@ -416,6 +487,23 @@ final class AiSessionController
         }));
 
         return Sse::response($through);
+    }
+
+    private function flushStreamEvents(ThroughStream $through, string $lockKey, int &$index): bool
+    {
+        $events = $this->streamSession->eventsSince($lockKey, $index);
+        foreach ($events as $event) {
+            if (!$through->isWritable()) {
+                return true;
+            }
+            Sse::write($through, $event['event'], $event['data']);
+            $index++;
+            if ($event['event'] === 'done' || $event['event'] === 'error') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

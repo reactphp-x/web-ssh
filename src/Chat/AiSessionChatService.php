@@ -17,6 +17,7 @@ use App\Repository\HostRepository;
 use App\Ssh\OrchestratorToolContext;
 use App\Ssh\SshExecBridge;
 use NeuronAI\Chat\Enums\MessageRole;
+use NeuronAI\Chat\Messages\AssistantMessage;
 use NeuronAI\Chat\Messages\ToolCallMessage;
 use NeuronAI\Chat\Messages\ToolResultMessage;
 use NeuronAI\Chat\Messages\UserMessage;
@@ -40,6 +41,7 @@ final class AiSessionChatService
         private readonly HttpClientInterface $httpClient,
         private readonly StreamChunkMapper $chunks,
         private readonly ChatStreamSession $streamSession,
+        private readonly StoppedTurnWriter $stoppedTurns,
         private readonly LoggerInterface $logger,
     ) {
     }
@@ -76,6 +78,15 @@ final class AiSessionChatService
             'approval' => $this->loadApproval($aiSessionId),
             'feedback' => $this->loadFeedback($aiSessionId),
             'generation' => $this->streamSession->getMeta($lockKey),
+            'urls' => [
+                'stream' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream',
+                'subscribe' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream/subscribe',
+                'stop' => '/api/ai/sessions/' . $aiSessionId . '/stop',
+                'approval' => '/api/ai/sessions/' . $aiSessionId . '/approval/stream',
+                'feedback' => '/api/ai/sessions/' . $aiSessionId . '/feedback/stream',
+                'reset' => '/api/ai/sessions/' . $aiSessionId . '/reset',
+                'bootstrap' => '/api/ai/sessions/' . $aiSessionId . '/bootstrap',
+            ],
         ];
     }
 
@@ -350,12 +361,13 @@ final class AiSessionChatService
                 $content = trim((string) $reply->getContent());
             }
         } catch (ChatStopException) {
-            $content = trim($assembled);
-
-            return array_merge($this->payload($content, $userMessage, $aiSessionId, null, null), ['stopped' => true]);
+            return $this->finalizeStoppedResponse($aiSessionId, $userMessage, $assembled);
         } catch (WorkflowInterrupt $interrupt) {
             return $this->formatInterrupt($interrupt, $aiSessionId, $userMessage, $emit, trim($assembled));
         } catch (Throwable $e) {
+            if ($emit !== null && $this->streamSession->wasManualStop($lockKey)) {
+                return $this->finalizeStoppedResponse($aiSessionId, $userMessage, $assembled);
+            }
             $this->logger->error('ai session chat failed', [
                 'ai_session_id' => $aiSessionId,
                 'username' => $username,
@@ -370,7 +382,51 @@ final class AiSessionChatService
 
         $content = $content !== '' ? $content : trim($assembled);
 
+        if ($this->streamSession->wasManualStop($lockKey)) {
+            return $this->finalizeStoppedResponse($aiSessionId, $userMessage, $assembled);
+        }
+
         return $this->payload($content, $userMessage, $aiSessionId, null, null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function finalizeStoppedResponse(
+        int $aiSessionId,
+        string $userMessage,
+        string $assembled,
+    ): array {
+        $content = $this->stoppedTurns->saveManualStop(
+            $this->fileHistory($aiSessionId),
+            $userMessage,
+            $assembled,
+            true,
+        );
+
+        return array_merge($this->payload($content, $userMessage, $aiSessionId, null, null), ['stopped' => true]);
+    }
+
+    private function persistAssistantPartial(int $aiSessionId, string $content): void
+    {
+        $content = trim($content);
+        if ($content === '') {
+            return;
+        }
+
+        $history = $this->fileHistory($aiSessionId);
+        $messages = $history->getMessages();
+        $last = $messages !== [] ? $messages[array_key_last($messages)] : null;
+        if ($last instanceof AssistantMessage) {
+            $existing = trim((string) $last->getContent());
+            if ($existing === '' || mb_strlen($content) >= mb_strlen($existing)) {
+                $history->replaceLastAssistantContent($content);
+            }
+
+            return;
+        }
+
+        $history->addMessage(new AssistantMessage($content));
     }
 
     /**
@@ -386,6 +442,9 @@ final class AiSessionChatService
     ): array {
         $request = $interrupt->getRequest();
         if ($request instanceof FeedbackRequest) {
+            if ($partialContent !== '') {
+                $this->persistAssistantPartial($aiSessionId, $partialContent);
+            }
             $feedback = $this->serializeFeedbackRequest($request, $interrupt->getWorkflowId());
             $content = $this->interruptContent(trim($partialContent), $this->feedbackHint($feedback));
             if ($emit) {
@@ -397,6 +456,10 @@ final class AiSessionChatService
 
         if (!$request instanceof ApprovalRequest) {
             throw new ChatException($interrupt->getMessage());
+        }
+
+        if ($partialContent !== '') {
+            $this->persistAssistantPartial($aiSessionId, $partialContent);
         }
 
         $approval = $this->serializeApprovalRequest($request, $interrupt->getWorkflowId());
@@ -788,6 +851,8 @@ final class AiSessionChatService
                 'role' => $role,
                 'content' => $content,
                 'html' => $this->toHtml($content),
+                'stopped' => $item instanceof AssistantMessage
+                    && StoppedMessageMetadata::isStopped($item->getMetadata('stopped')),
             ];
         }
 

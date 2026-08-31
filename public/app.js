@@ -2432,6 +2432,7 @@ const appOptions = {
                         return {
                             bootstrap: base + '/bootstrap',
                             stream: base + '/chat/stream',
+                            subscribe: base + '/chat/stream/subscribe',
                             approval: base + '/approval/stream',
                             feedback: base + '/feedback/stream',
                             stop: base + '/stop',
@@ -2472,6 +2473,7 @@ const appOptions = {
                         content: item?.content || '',
                         html: item?.html || item?.content || '',
                         streaming: false,
+                        stopped: !!item?.stopped,
                     };
                 };
 
@@ -2515,6 +2517,18 @@ const appOptions = {
                     if (!data) return;
                     const callId = data.callId || null;
                     if (data.phase === 'call') {
+                        if (callId) {
+                            const existing = messages.value.find(
+                                (item) => item.kind === 'tool' && item.callId === callId,
+                            );
+                            if (existing) {
+                                if (existing.status !== 'done') {
+                                    existing.status = 'running';
+                                    syncToolCallsFromTimeline();
+                                }
+                                return;
+                            }
+                        }
                         commitStreamingAssistants();
                         const entry = {
                             kind: 'tool',
@@ -2541,6 +2555,20 @@ const appOptions = {
                         target.status = 'done';
                         syncToolCallsFromTimeline();
                         return;
+                    }
+                    if (callId) {
+                        const existing = messages.value.find(
+                            (item) => item.kind === 'tool' && item.callId === callId,
+                        );
+                        if (existing) {
+                            if (data.inputs && Object.keys(data.inputs).length) {
+                                existing.inputs = data.inputs;
+                            }
+                            existing.result = data.result ?? null;
+                            existing.status = 'done';
+                            syncToolCallsFromTimeline();
+                            return;
+                        }
                     }
                     messages.value.push({
                         kind: 'tool',
@@ -2582,6 +2610,7 @@ const appOptions = {
                     if (toolCallsEscapeHandler) {
                         window.removeEventListener('keydown', toolCallsEscapeHandler);
                     }
+                    subscribeAbortController?.abort();
                 });
 
                 const messages = ref([]);
@@ -2589,6 +2618,10 @@ const appOptions = {
                 const toolHostMap = computed(() => buildHostMapFromTimeline(messages.value));
                 const busy = ref(false);
                 const busyText = ref('');
+                const generationActive = ref(false);
+                const streamEventIndex = ref(0);
+                const stopEnabled = computed(() => busy.value || generationActive.value);
+                let subscribeReplayState = null;
                 const configured = ref(false);
                 const enabled = ref(true);
                 const approval = ref(null);
@@ -2674,6 +2707,7 @@ const appOptions = {
                     });
                 };
                 let abortController = null;
+                let subscribeAbortController = null;
                 let scrollRaf = 0;
                 let assistantMessageSeq = 0;
 
@@ -2742,7 +2776,55 @@ const appOptions = {
                     });
                 };
 
-                const bootstrap = async () => {
+                const trimCurrentTurnAssistantsForResume = () => {
+                    const lastUserIdx = messages.value.findLastIndex(
+                        (item) => item.kind === 'message' && item.role === 'user',
+                    );
+                    if (lastUserIdx < 0) {
+                        return;
+                    }
+                    messages.value = messages.value.filter((item, idx) => {
+                        if (idx <= lastUserIdx) {
+                            return true;
+                        }
+                        if (item.kind === 'tool') {
+                            return true;
+                        }
+
+                        return !(item.kind === 'message' && item.role === 'assistant');
+                    });
+                    syncToolCallsFromTimeline();
+                };
+
+                const findLastAssistantMessage = () => {
+                    for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+                        const msg = messages.value[i];
+                        if (msg?.kind === 'message' && msg.role === 'assistant') {
+                            return msg;
+                        }
+                    }
+
+                    return null;
+                };
+
+                const reconcileInterruptUi = () => {
+                    const lastUserIdx = messages.value.findLastIndex(
+                        (item) => item.kind === 'message' && item.role === 'user',
+                    );
+                    const afterUser = lastUserIdx >= 0
+                        ? messages.value.slice(lastUserIdx + 1)
+                        : messages.value;
+                    const hasCompletedSsh = afterUser.some(
+                        (item) => item.kind === 'tool'
+                            && item.name === 'run_ssh_command'
+                            && item.status === 'done',
+                    );
+                    if (hasCompletedSsh) {
+                        approval.value = null;
+                    }
+                };
+
+                const bootstrap = async (options = {}) => {
                     if (!threadReady.value) return;
                     try {
                         const res = await fetch(chatApi.value.bootstrap, {
@@ -2764,6 +2846,7 @@ const appOptions = {
                                 html: m.html || m.content,
                                 content: m.content,
                                 streaming: false,
+                                stopped: !!m.stopped,
                             }));
                         }
                         syncToolCallsFromTimeline();
@@ -2774,6 +2857,23 @@ const appOptions = {
                         feedback.value = json.data?.feedback || null;
                         resetFeedbackForm();
                         errorText.value = '';
+
+                        const generation = json.data?.generation;
+                        generationActive.value = !!(generation?.active && !generation?.manual_stop);
+                        reconcileInterruptUi();
+                        if (!options.skipGenerationResume && generationActive.value && isSessionMode.value && chatApi.value.subscribe) {
+                            approval.value = null;
+                            feedback.value = null;
+                            resetFeedbackForm();
+                            trimCurrentTurnAssistantsForResume();
+                            streamEventIndex.value = 0;
+                            await subscribeGeneration(0, {
+                                hadPendingApproval: false,
+                                hadPendingFeedback: false,
+                                partial: '',
+                            });
+                        }
+
                         await scrollToBottom();
                     } catch (e) {
                         errorText.value = e.message || 'AI 初始化失败';
@@ -2804,13 +2904,17 @@ const appOptions = {
 
                 const finalizeAssistant = (payload) => {
                     const streaming = findLastStreamingAssistant();
-                    if (streaming) {
-                        streaming.streaming = false;
-                        const local = String(streaming.content || '').trim();
+                    const target = streaming || findLastAssistantMessage();
+                    if (target) {
+                        target.streaming = false;
+                        const local = String(target.content || '').trim();
                         const remote = String(payload?.content || '').trim();
                         if (remote && (!local || remote.length >= local.length)) {
-                            streaming.html = payload.html || streaming.html;
-                            streaming.content = payload.content || streaming.content;
+                            target.html = payload.html || target.html;
+                            target.content = payload.content || target.content;
+                        }
+                        if (payload?.stopped) {
+                            target.stopped = true;
                         }
                     } else if (payload?.content?.trim()) {
                         const tail = payload.content.trim();
@@ -2828,27 +2932,156 @@ const appOptions = {
                                 content: payload.content,
                                 html: payload.html || payload.content.replace(/\n/g, '<br>'),
                                 streaming: false,
+                                stopped: !!payload?.stopped,
                             });
                         }
                     } else {
                         commitStreamingAssistants();
                     }
                     if (payload?.approval && (payload.approval.actions?.length ?? 0) > 0) {
-                        approval.value = payload.approval;
+                        if (!subscribeReplayState || subscribeReplayState.hadPendingApproval) {
+                            approval.value = payload.approval;
+                        }
                     } else if (!payload?.approval) {
                         approval.value = null;
                     }
                     if (payload?.feedback && (payload.feedback.fields?.length ?? 0) > 0) {
-                        feedback.value = payload.feedback;
+                        if (!subscribeReplayState || subscribeReplayState.hadPendingFeedback) {
+                            feedback.value = payload.feedback;
+                            resetFeedbackForm();
+                        }
                     } else if (!payload?.feedback) {
                         feedback.value = null;
                     }
                 };
 
+                const appendReplayDelta = (text) => {
+                    if (!text) return;
+                    if (!subscribeReplayState) {
+                        appendAssistantDelta(text);
+                        return;
+                    }
+                    subscribeReplayState.replayedText += text;
+                    const chunk = subscribeReplayState.replayedText.slice(subscribeReplayState.lastEmittedLength);
+                    if (!chunk) {
+                        return;
+                    }
+                    appendAssistantDelta(chunk);
+                    subscribeReplayState.lastEmittedLength = subscribeReplayState.replayedText.length;
+                };
+
+                const handleStreamEvent = (event, data) => {
+                    streamEventIndex.value += 1;
+                    if (event === 'delta') {
+                        if (subscribeReplayState) {
+                            appendReplayDelta(data.text || '');
+                        } else {
+                            appendAssistantDelta(data.text || '');
+                        }
+                    }
+                    if (event === 'tool') {
+                        recordToolEvent(data);
+                        busyText.value = '工具: ' + (data.label || data.name || '') + ' (' + (data.phase === 'call' ? '调用' : '完成') + ')';
+                        scrollToBottom();
+                    }
+                    if (event === 'approval') {
+                        if (!subscribeReplayState || subscribeReplayState.hadPendingApproval) {
+                            approval.value = data;
+                            scrollToBottom();
+                        }
+                    }
+                    if (event === 'feedback') {
+                        if (!subscribeReplayState || subscribeReplayState.hadPendingFeedback) {
+                            feedback.value = data;
+                            resetFeedbackForm();
+                            scrollToBottom();
+                        }
+                    }
+                    if (event === 'done') {
+                        finalizeAssistant(data);
+                        scrollToBottom();
+                    }
+                    if (event === 'error') {
+                        errorText.value = data.message || 'AI 错误';
+                        scrollToBottom();
+                    }
+                };
+
+                const subscribeGeneration = async (fromIndex = 0, replayContext = {}) => {
+                    if (!isSessionMode.value || !chatApi.value.subscribe) return;
+                    subscribeAbortController?.abort();
+                    subscribeAbortController = new AbortController();
+                    generationActive.value = true;
+                    busy.value = true;
+                    busyText.value = 'AI 思考中...';
+                    let refreshAfter = false;
+                    let resyncAfter = false;
+                    subscribeReplayState = {
+                        hadPendingApproval: !!replayContext.hadPendingApproval,
+                        hadPendingFeedback: !!replayContext.hadPendingFeedback,
+                        replayedText: '',
+                        lastEmittedLength: 0,
+                    };
+                    try {
+                        const response = await fetch(chatApi.value.subscribe, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                Accept: 'text/event-stream',
+                            },
+                            credentials: 'same-origin',
+                            body: JSON.stringify({ from_index: fromIndex }),
+                            signal: subscribeAbortController.signal,
+                        });
+                        const contentType = response.headers.get('content-type') || '';
+                        if (!response.ok || !contentType.includes('text/event-stream')) {
+                            if (response.status === 404) {
+                                resyncAfter = true;
+                            } else {
+                                const json = await response.json().catch(() => ({}));
+                                errorText.value = json.msg || '重连接失败';
+                            }
+                            generationActive.value = false;
+                            return;
+                        }
+                        try {
+                            await consumeSse(response, (event, data) => {
+                                handleStreamEvent(event, data);
+                                if (event === 'done' || event === 'error') {
+                                    refreshAfter = true;
+                                }
+                            });
+                        } catch (streamError) {
+                            if (streamError?.name !== 'AbortError') {
+                                resyncAfter = true;
+                            }
+                        }
+                    } catch (e) {
+                        if (e.name !== 'AbortError') {
+                            resyncAfter = true;
+                        }
+                    } finally {
+                        subscribeReplayState = null;
+                        busy.value = false;
+                        generationActive.value = false;
+                        busyText.value = '';
+                        commitStreamingAssistants();
+                        reconcileInterruptUi();
+                        await scrollToBottom();
+                        if (refreshAfter || resyncAfter) {
+                            errorText.value = '';
+                            await bootstrap({ skipGenerationResume: true });
+                        }
+                    }
+                };
+
                 const runStream = async (url, body) => {
+                    subscribeAbortController?.abort();
                     abortController?.abort();
                     abortController = new AbortController();
                     busy.value = true;
+                    generationActive.value = true;
+                    streamEventIndex.value = 0;
                     busyText.value = 'AI 思考中...';
                     errorText.value = '';
                     scrollToBottom();
@@ -2870,37 +3103,14 @@ const appOptions = {
                             finalizeAssistant(json.data || {});
                             return;
                         }
-                        await consumeSse(response, (event, data) => {
-                            if (event === 'delta') appendAssistantDelta(data.text || '');
-                            if (event === 'tool') {
-                                recordToolEvent(data);
-                                busyText.value = '工具: ' + (data.label || data.name || '') + ' (' + (data.phase === 'call' ? '调用' : '完成') + ')';
-                                scrollToBottom();
-                            }
-                            if (event === 'approval') {
-                                approval.value = data;
-                                scrollToBottom();
-                            }
-                            if (event === 'feedback') {
-                                feedback.value = data;
-                                resetFeedbackForm();
-                                scrollToBottom();
-                            }
-                            if (event === 'done') {
-                                finalizeAssistant(data);
-                                scrollToBottom();
-                            }
-                            if (event === 'error') {
-                                errorText.value = data.message || 'AI 错误';
-                                scrollToBottom();
-                            }
-                        });
+                        await consumeSse(response, (event, data) => handleStreamEvent(event, data));
                     } catch (e) {
                         if (e.name !== 'AbortError') {
                             errorText.value = e.message || 'AI 请求失败';
                         }
                     } finally {
                         busy.value = false;
+                        generationActive.value = false;
                         busyText.value = '';
                         commitStreamingAssistants();
                         await scrollToBottom();
@@ -2909,7 +3119,7 @@ const appOptions = {
 
                 const sendMessage = async () => {
                     const text = draft.value.trim();
-                    if (!text || busy.value || !threadReady.value) return;
+                    if (!text || busy.value || generationActive.value || !threadReady.value) return;
                     if (!isSessionMode.value && !props.connected) return;
                     messages.value.push({
                         kind: 'message',
@@ -2980,17 +3190,17 @@ const appOptions = {
                 };
 
                 const composerDisabled = computed(() => {
-                    if (busy.value || !configured.value || !!approval.value || !!feedback.value) return true;
+                    if (busy.value || generationActive.value || !configured.value || !!approval.value || !!feedback.value) return true;
                     if (isSessionMode.value) return false;
                     return !props.connected;
                 });
 
                 const stopGeneration = async () => {
-                    abortController?.abort();
+                    subscribeAbortController?.abort();
                     if (!threadReady.value) return;
                     const body = isSessionMode.value ? {} : { conn_id: props.connId };
                     await postJson(chatApi.value.stop, body);
-                    await bootstrap();
+                    await bootstrap({ skipGenerationResume: true });
                 };
 
                 const resetChat = async () => {
@@ -3051,6 +3261,8 @@ const appOptions = {
                     draft,
                     busy,
                     busyText,
+                    generationActive,
+                    stopEnabled,
                     configured,
                     enabled,
                     approval,
@@ -3095,8 +3307,8 @@ const appOptions = {
                             </button>
                         </div>
                         <div class="actions">
-                            <button type="button" @click="stopGeneration" :disabled="!busy">停止</button>
-                            <button type="button" @click="resetChat" :disabled="busy">重置</button>
+                            <button type="button" @click="stopGeneration" :disabled="!stopEnabled">停止</button>
+                            <button type="button" @click="resetChat" :disabled="busy || generationActive">重置</button>
                         </div>
                     </div>
                     <Teleport to="body">
@@ -3131,7 +3343,8 @@ const appOptions = {
                                     <AiToolCallCard :item="msg" :host-map="toolHostMap" compact class="ai-tool-inline" />
                                 </div>
                                 <div v-else class="ai-msg" :class="msg.role">
-                                    <div class="ai-bubble" :class="{ streaming: msg.streaming }" v-html="msg.html"></div>
+                                    <div class="ai-bubble" :class="{ streaming: msg.streaming, stopped: msg.stopped }" v-html="msg.html"></div>
+                                    <span v-if="msg.stopped" class="ai-stopped-badge">已停止</span>
                                 </div>
                             </template>
                             <div v-if="busyText" class="ai-busy">{{ busyText }}</div>

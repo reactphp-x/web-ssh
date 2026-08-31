@@ -123,10 +123,39 @@ final class ChatStreamSession
     public function finish(string $sessionKey): void
     {
         $this->unregisterScope($sessionKey);
-        unset(self::$memoryMeta[$sessionKey], self::$memoryEvents[$sessionKey]);
+
+        $meta = self::$memoryMeta[$sessionKey] ?? $this->readMetaFromRedis($sessionKey);
+        if ($meta !== null) {
+            $meta['active'] = false;
+            self::$memoryMeta[$sessionKey] = $meta;
+            $this->writeMeta($sessionKey, $meta, self::TTL);
+        }
+
         $this->clearStopFlag($sessionKey);
-        $this->clearRedisEvents($sessionKey);
-        $this->clearRedisMeta($sessionKey);
+    }
+
+    public function isSubscribeAllowed(string $sessionKey): bool
+    {
+        return $this->isActive($sessionKey) || $this->hasBufferedEvents($sessionKey);
+    }
+
+    public function isManuallyStopped(string $sessionKey): bool
+    {
+        $meta = $this->readMeta($sessionKey);
+
+        return $meta !== null && ($meta['manual_stop'] ?? false) === true;
+    }
+
+    public function isStreamComplete(string $sessionKey): bool
+    {
+        $events = $this->readEvents($sessionKey);
+        if ($events === []) {
+            return true;
+        }
+
+        $last = $events[array_key_last($events)];
+
+        return ($last['event'] ?? '') === 'done' || ($last['event'] ?? '') === 'error';
     }
 
     /**

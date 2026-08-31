@@ -35,6 +35,7 @@ use App\Chat\AiSessionChatService;
 use App\Chat\ChatService;
 use App\Chat\ChatSettings;
 use App\Chat\ChatStreamSession;
+use App\Chat\StoppedTurnWriter;
 use App\Chat\StreamChunkMapper;
 use App\Chat\ThreadLock;
 use App\Middleware\FiberHandler;
@@ -140,6 +141,7 @@ final class WebAppFactory
         $redisPool = self::redisPool($env);
         $chatSettings = new ChatSettings($env);
         $chatStreamSession = new ChatStreamSession($redisPool);
+        $stoppedTurnWriter = new StoppedTurnWriter();
         $chatService = new ChatService(
             $chatSettings,
             $sessionBridge,
@@ -165,6 +167,7 @@ final class WebAppFactory
             new ReactHttpClient(timeout: $chatSettings->httpTimeout()),
             new StreamChunkMapper(),
             $chatStreamSession,
+            $stoppedTurnWriter,
             $logger,
         );
         $aiSessions = new AiSessionController(
@@ -254,6 +257,7 @@ final class WebAppFactory
         $app->get('/api/ai/sessions/{id:\d+}', static fn (ServerRequestInterface $request) => $aiSessions->show($request));
         $app->get('/api/ai/sessions/{id:\d+}/bootstrap', static fn (ServerRequestInterface $request) => $aiSessions->bootstrap($request));
         $app->post('/api/ai/sessions/{id:\d+}/chat/stream', static fn (ServerRequestInterface $request) => $aiSessions->stream($request));
+        $app->post('/api/ai/sessions/{id:\d+}/chat/stream/subscribe', static fn (ServerRequestInterface $request) => $aiSessions->subscribeStream($request));
         $app->post('/api/ai/sessions/{id:\d+}/approval/stream', static fn (ServerRequestInterface $request) => $aiSessions->approvalStream($request));
         $app->post('/api/ai/sessions/{id:\d+}/feedback/stream', static fn (ServerRequestInterface $request) => $aiSessions->feedbackStream($request));
         $app->post('/api/ai/sessions/{id:\d+}/stop', static fn (ServerRequestInterface $request) => $aiSessions->stop($request));

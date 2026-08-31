@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Chat;
 
 use NeuronAI\Chat\Enums\MessageRole;
+use NeuronAI\Chat\Messages\AssistantMessage;
 use NeuronAI\Chat\Messages\ToolCallMessage;
 use NeuronAI\Chat\Messages\ToolResultMessage;
 
@@ -84,23 +85,34 @@ final class ChatTimelineBuilder
                 continue;
             }
 
-            $timeline[] = self::messageEntry($content, $role, $toHtml);
+            $timeline[] = self::messageEntry(
+                $content,
+                $role,
+                $toHtml,
+                $item instanceof AssistantMessage
+                    && StoppedMessageMetadata::isStopped($item->getMetadata('stopped')),
+            );
         }
 
         return $timeline;
     }
 
     /**
-     * @return array{kind: string, role: string, content: string, html: string}
+     * @return array{kind: string, role: string, content: string, html: string, stopped?: bool}
      */
-    private static function messageEntry(string $content, string $role, callable $toHtml): array
+    private static function messageEntry(string $content, string $role, callable $toHtml, bool $stopped = false): array
     {
-        return [
+        $entry = [
             'kind' => 'message',
             'role' => $role,
             'content' => $content,
             'html' => $toHtml($content),
         ];
+        if ($stopped) {
+            $entry['stopped'] = true;
+        }
+
+        return $entry;
     }
 
     /**
