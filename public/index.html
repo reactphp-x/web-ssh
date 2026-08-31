@@ -477,6 +477,10 @@
             min-height: 0;
         }
 
+        .terminal-body.no-active-tab {
+            grid-template-columns: 1fr;
+        }
+
         .terminal-sidebar {
             display: flex;
             flex-direction: column;
@@ -509,6 +513,14 @@
 
         .layout-ai-workspace .ai-assistant-layout {
             flex: 1 1 auto;
+            min-height: 0;
+            height: auto;
+            box-sizing: border-box;
+        }
+
+        .layout-ai-workspace .terminal-layout {
+            flex: 1 1 auto;
+            width: 100%;
             min-height: 0;
             height: auto;
             box-sizing: border-box;

@@ -4082,7 +4082,7 @@ const appOptions = {
                         >AI 助手</button>
                     </div>
 
-                    <div class="terminal-body" :class="{ 'is-mobile': isMobile }">
+                    <div class="terminal-body" :class="{ 'is-mobile': isMobile, 'no-active-tab': !activeTab }">
                         <div
                             class="terminal-left-column"
                             :class="{ 'pane-mobile-active': !isMobile || mobilePane === 'terminal' }"
@@ -4139,11 +4139,11 @@ const appOptions = {
                                 </div>
                             </div>
                         </div>
-                        <div class="terminal-sidebar" :class="{ 'is-mobile': isMobile }">
+                        <div v-if="activeTab" class="terminal-sidebar" :class="{ 'is-mobile': isMobile }">
                             <AiChatPanel
                                 :conn-id="activeConnId"
                                 :connected="activeConnected"
-                                :visible="!!activeTab"
+                                :visible="true"
                                 :pane-active="!isMobile || mobilePane === 'ai'"
                                 :title="activeTab?.title || ''"
                             />
