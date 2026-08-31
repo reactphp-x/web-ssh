@@ -90,4 +90,40 @@ final class ChatSettings
     {
         return max(1000, $this->environment->int('NEURON_CHAT_CONTEXT_WINDOW', 50000));
     }
+
+    public function summarizationEnabled(): bool
+    {
+        return filter_var(
+            $this->environment->string('NEURON_CHAT_SUMMARIZATION_ENABLED', 'true'),
+            FILTER_VALIDATE_BOOL,
+        );
+    }
+
+    public function summarizationMaxTokens(): int
+    {
+        $configured = trim($this->environment->string('NEURON_CHAT_SUMMARIZATION_MAX_TOKENS', ''));
+        if ($configured !== '') {
+            return max(0, (int) $configured);
+        }
+
+        return (int) floor($this->contextWindow() * 0.8);
+    }
+
+    public function summarizationMessagesToKeep(): int
+    {
+        return max(1, $this->environment->int('NEURON_CHAT_SUMMARIZATION_KEEP', 5));
+    }
+
+    public function summarizationPrompt(): string
+    {
+        return <<<'PROMPT'
+            请用简洁中文总结以下对话，保留继续运维所需的关键信息，包括：
+            - 讨论过的主机、路径、服务与配置
+            - 已执行的重要命令及其结论
+            - 用户目标、已做决策与待办事项
+            - 尚未解决的问题或风险
+
+            摘要应足够短以便放入上下文，但要保留必要细节，便于后续继续排查与操作。
+            PROMPT;
+    }
 }

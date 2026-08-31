@@ -6,6 +6,7 @@ namespace App\Neuron;
 
 use App\Chat\ChatSettings;
 use App\Neuron\Agent\Middleware\SshCommandApprovalPrep;
+use App\Neuron\Agent\ProvidesSummarizationMiddleware;
 use App\Neuron\Agent\Middleware\UserFeedback;
 use App\Neuron\HttpClient\ReactHttpClient;
 use App\Neuron\Tools\AskUserTool;
@@ -25,6 +26,8 @@ use NeuronAI\Providers\OpenAILike;
 
 final class SshAgent extends Agent
 {
+    use ProvidesSummarizationMiddleware;
+
     private ?ChatSettings $settings = null;
 
     private ?HttpClientInterface $http = null;
@@ -121,9 +124,12 @@ final class SshAgent extends Agent
             $toolNode[] = new UserFeedback();
         }
 
-        return [
-            ToolNode::class => $toolNode,
-        ];
+        return array_merge(
+            $this->summarizationMiddlewareEntries($this->requireSettings()),
+            [
+                ToolNode::class => $toolNode,
+            ],
+        );
     }
 
     protected function tools(): array

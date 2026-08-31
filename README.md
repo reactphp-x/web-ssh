@@ -588,8 +588,14 @@ NEURON_AI_MODEL=gpt-4o-mini
 NEURON_AI_HTTP_TIMEOUT=120
 AI_COMMAND_TIMEOUT=30
 NEURON_AI_TOOL_MAX_RUNS=30    # 单轮对话工具调用上限（默认 30）
+NEURON_CHAT_CONTEXT_WINDOW=50000          # 对话历史上限（token，超出则硬裁剪）
+NEURON_CHAT_SUMMARIZATION_ENABLED=true    # 接近上限时用 LLM 总结旧消息（见 Neuron Summarization middleware）
+NEURON_CHAT_SUMMARIZATION_KEEP=5          # 总结后保留最近 N 条消息
+# NEURON_CHAT_SUMMARIZATION_MAX_TOKENS=40000  # 触发总结的阈值，默认 context_window 的 80%
 REDIS_URL=127.0.0.1:6379      # HTTP_WORKERS>1 时建议配置
 ```
+
+长对话会先尝试 **总结** 较早的消息（保留最近若干条），而不是直接丢弃；若仍超过 `NEURON_CHAT_CONTEXT_WINDOW` 才会硬裁剪。关闭总结：`NEURON_CHAT_SUMMARIZATION_ENABLED=false`。
 
 <a id="field-vs-live"></a>
 
