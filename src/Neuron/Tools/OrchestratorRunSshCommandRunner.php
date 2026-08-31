@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Neuron\Tools;
 
+use App\Ssh\CommandOutputCollector;
 use App\Ssh\OrchestratorToolContext;
 use React\Promise\PromiseInterface;
 use RuntimeException;
@@ -55,7 +56,7 @@ final class OrchestratorRunSshCommandRunner
             'host_id' => $hostId,
             'command' => $command,
             'reason' => $reason,
-            'output' => $result->output,
+            'output' => CommandOutputCollector::sanitizeUtf8($result->output),
             'exit_code' => $result->exitCode,
             'timed_out' => $result->timedOut,
         ];

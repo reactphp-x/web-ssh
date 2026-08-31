@@ -877,6 +877,7 @@ final class AiSessionChatService
             if ($content === '') {
                 continue;
             }
+            $content = ChatUtf8::sanitize($content);
             $messages[] = [
                 'role' => $role,
                 'content' => $content,
@@ -990,10 +991,7 @@ final class AiSessionChatService
         }
 
         $result = $payload['result'] ?? null;
-        if (is_string($result) && strlen($result) > 4000) {
-            $result = substr($result, 0, 4000) . '…';
-        }
-        $entry['result'] = $result;
+        $entry['result'] = ChatUtf8::toolResult($result);
         $entry['status'] = 'done';
 
         return $entry;

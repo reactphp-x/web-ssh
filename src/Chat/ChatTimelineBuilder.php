@@ -33,7 +33,7 @@ final class ChatTimelineBuilder
             if ($item instanceof ToolCallMessage) {
                 $text = method_exists($item, 'getContent') ? trim((string) $item->getContent()) : '';
                 if ($text !== '') {
-                    $timeline[] = self::messageEntry($text, MessageRole::ASSISTANT->value, $toHtml);
+                    $timeline[] = self::messageEntry(ChatUtf8::sanitize($text), MessageRole::ASSISTANT->value, $toHtml);
                 }
 
                 foreach ($item->getTools() as $tool) {
@@ -84,6 +84,7 @@ final class ChatTimelineBuilder
             if ($content === '') {
                 continue;
             }
+            $content = ChatUtf8::sanitize($content);
 
             $timeline[] = self::messageEntry(
                 $content,
@@ -155,10 +156,7 @@ final class ChatTimelineBuilder
         }
 
         $result = $payload['result'] ?? null;
-        if (is_string($result) && strlen($result) > 4000) {
-            $result = substr($result, 0, 4000) . '…';
-        }
-        $entry['result'] = $result;
+        $entry['result'] = ChatUtf8::toolResult($result);
         $entry['status'] = 'done';
 
         return $entry;

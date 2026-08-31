@@ -791,10 +791,7 @@ final class ChatService
         }
 
         $result = $payload['result'] ?? null;
-        if (is_string($result) && strlen($result) > 4000) {
-            $result = substr($result, 0, 4000) . '…';
-        }
-        $entry['result'] = $result;
+        $entry['result'] = ChatUtf8::toolResult($result);
         $entry['status'] = 'done';
 
         return $entry;

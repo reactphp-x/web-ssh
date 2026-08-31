@@ -14,7 +14,7 @@ final class JsonResponse
         return new Response(
             $status,
             ['Content-Type' => 'application/json; charset=utf-8'],
-            json_encode($data, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+            json_encode($data, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR),
         );
     }
 
