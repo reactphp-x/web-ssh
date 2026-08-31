@@ -2654,7 +2654,24 @@ const appOptions = {
                 };
                 const logRef = ref(null);
                 const chatBodyRef = ref(null);
+                const composerRef = ref(null);
                 const composing = ref(false);
+                const COMPOSER_MAX_HEIGHT = 200;
+
+                const resizeComposer = () => {
+                    nextTick(() => {
+                        const el = composerRef.value;
+                        if (!el) {
+                            return;
+                        }
+
+                        el.style.height = 'auto';
+                        const scrollHeight = el.scrollHeight;
+                        const nextHeight = Math.min(scrollHeight, COMPOSER_MAX_HEIGHT);
+                        el.style.height = `${nextHeight}px`;
+                        el.style.overflowY = scrollHeight > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden';
+                    });
+                };
                 let abortController = null;
                 let scrollRaf = 0;
 
@@ -2863,6 +2880,7 @@ const appOptions = {
                         streaming: false,
                     });
                     draft.value = '';
+                    resizeComposer();
                     await scrollToBottom();
                     const body = isSessionMode.value
                         ? { message: text }
@@ -2970,6 +2988,14 @@ const appOptions = {
                     bootstrap();
                 }, { immediate: true });
 
+                watch(draft, resizeComposer);
+
+                watch(() => [approval.value, feedback.value], () => {
+                    if (!approval.value && !feedback.value) {
+                        resizeComposer();
+                    }
+                });
+
                 watch(() => props.paneActive, (active) => {
                     if (active) {
                         scrollToBottom();
@@ -2998,7 +3024,9 @@ const appOptions = {
                     errorText,
                     logRef,
                     chatBodyRef,
+                    composerRef,
                     composing,
+                    resizeComposer,
                     sendMessage,
                     onComposerKeydown,
                     submitApproval,
@@ -3074,20 +3102,22 @@ const appOptions = {
                     <div class="ai-chat-footer">
                         <div v-if="approval" class="ai-approval">
                             <h4>待审核命令</h4>
-                            <div
-                                v-for="(action, actionIdx) in approval.actions || []"
-                                :key="action.id || actionIdx"
-                                class="ai-approval-action"
-                            >
-                                <div v-if="action.host?.label" class="ai-approval-host">
-                                    <span class="ai-approval-host-label">目标主机</span>
-                                    <strong>{{ action.host.label }}</strong>
+                            <div class="ai-approval-list">
+                                <div
+                                    v-for="(action, actionIdx) in approval.actions || []"
+                                    :key="action.id || actionIdx"
+                                    class="ai-approval-action"
+                                >
+                                    <div v-if="action.host?.label" class="ai-approval-host">
+                                        <span class="ai-approval-host-label">目标主机</span>
+                                        <strong>{{ action.host.label }}</strong>
+                                    </div>
+                                    <pre>{{ action.detail || action.description }}</pre>
                                 </div>
-                                <pre>{{ action.detail || action.description }}</pre>
                             </div>
                             <div class="actions">
-                                <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
                                 <button type="button" @click="submitApproval(false)" :disabled="busy">拒绝</button>
+                                <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
                             </div>
                         </div>
                         <div v-if="feedback" class="ai-feedback">
@@ -3161,14 +3191,16 @@ const appOptions = {
                         </div>
                         <div v-if="!approval && !feedback" class="ai-composer">
                             <textarea
+                                ref="composerRef"
                                 v-model="draft"
                                 rows="2"
                                 placeholder="描述任务，例如：查看磁盘使用情况并清理临时文件"
                                 enterkeyhint="send"
                                 autocapitalize="sentences"
                                 autocomplete="off"
+                                @input="resizeComposer"
                                 @compositionstart="composing = true"
-                                @compositionend="composing = false"
+                                @compositionend="composing = false; resizeComposer()"
                                 @keydown="onComposerKeydown"
                                 :disabled="composerDisabled"
                             ></textarea>

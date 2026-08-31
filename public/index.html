@@ -1303,12 +1303,15 @@
 
         .ai-approval {
             max-height: min(48vh, 420px);
+            overflow: hidden;
         }
 
         .ai-feedback {
             max-height: min(48vh, 420px);
+            overflow: hidden;
         }
 
+        .ai-approval-list,
         .ai-feedback-form {
             flex: 1 1 auto;
             min-height: 0;
@@ -1331,6 +1334,11 @@
             padding: 8px;
             resize: none;
             font-size: 13px;
+            line-height: 1.45;
+            box-sizing: border-box;
+            min-height: calc(1.45em * 2 + 16px);
+            max-height: min(200px, 32vh);
+            overflow-y: hidden;
             margin-bottom: 8px;
         }
 
@@ -1355,6 +1363,10 @@
             margin-top: 10px;
             padding-top: 10px;
             border-top: 1px solid #2a2f3a;
+        }
+
+        .ai-approval-action .ai-approval-host + pre {
+            margin-top: 8px;
         }
 
         .ai-approval-host {
@@ -1386,21 +1398,23 @@
         }
 
         .ai-approval pre {
-            flex: 1 1 auto;
-            min-height: 0;
-            max-height: min(36vh, 300px);
-            overflow-y: auto;
             white-space: pre-wrap;
             word-break: break-word;
             background: #1d2330;
             padding: 8px;
             border-radius: 6px;
             font-size: 12px;
-            margin: 0 0 8px;
+            margin: 0;
         }
 
         .ai-approval .actions {
             flex-shrink: 0;
+            display: flex;
+            gap: 8px;
+            justify-content: space-between;
+            padding-top: 8px;
+            border-top: 1px solid #2a2f3a;
+            background: #151821;
         }
 
         .ai-field {
