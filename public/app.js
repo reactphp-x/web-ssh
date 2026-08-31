@@ -2645,7 +2645,6 @@ const appOptions = {
                 let subscribeReplayState = null;
                 const configured = ref(false);
                 const enabled = ref(true);
-                const sessionResetEnabled = ref(false);
                 const approval = ref(null);
                 const feedback = ref(null);
                 const feedbackAnswers = ref({});
@@ -2865,7 +2864,6 @@ const appOptions = {
                         }
                         configured.value = !!json.data?.configured;
                         enabled.value = json.data?.enabled !== false;
-                        sessionResetEnabled.value = !!json.data?.session_reset_enabled;
                         if (Array.isArray(json.data?.timeline) && json.data.timeline.length) {
                             messages.value = json.data.timeline.map(normalizeTimelineItem);
                         } else {
@@ -3236,7 +3234,6 @@ const appOptions = {
 
                 const resetChat = async () => {
                     if (!threadReady.value || busy.value) return;
-                    if (isSessionMode.value && !sessionResetEnabled.value) return;
                     subscribeAbortController?.abort();
                     const body = isSessionMode.value ? {} : { conn_id: props.connId };
                     const hadActiveGeneration = generationActive.value;
@@ -3315,7 +3312,6 @@ const appOptions = {
                     stopEnabled,
                     configured,
                     enabled,
-                    sessionResetEnabled,
                     approval,
                     feedback,
                     feedbackAnswers,
@@ -3359,12 +3355,7 @@ const appOptions = {
                         </div>
                         <div class="actions">
                             <button type="button" @click="stopGeneration" :disabled="!stopEnabled">停止</button>
-                            <button
-                                v-if="!isSessionMode || sessionResetEnabled"
-                                type="button"
-                                @click="resetChat"
-                                :disabled="busy"
-                            >重置</button>
+                            <button type="button" @click="resetChat" :disabled="busy">重置</button>
                         </div>
                     </div>
                     <Teleport to="body">
@@ -3931,6 +3922,31 @@ const appOptions = {
                 const mobilePane = ref('ai');
                 const isMobile = ref(false);
                 const loading = ref(false);
+                const LIVE_PANE_KEY = 'web-ssh-ai-session-live-visible';
+                const livePaneVisible = ref(true);
+
+                try {
+                    const saved = localStorage.getItem(LIVE_PANE_KEY);
+                    if (saved === '0') {
+                        livePaneVisible.value = false;
+                    }
+                } catch (_) {
+                    // ignore storage errors
+                }
+
+                const showLivePane = computed(() => livePaneVisible.value);
+
+                const toggleLivePane = () => {
+                    livePaneVisible.value = !livePaneVisible.value;
+                    try {
+                        localStorage.setItem(LIVE_PANE_KEY, livePaneVisible.value ? '1' : '0');
+                    } catch (_) {
+                        // ignore storage errors
+                    }
+                    if (!livePaneVisible.value && isMobile.value) {
+                        mobilePane.value = 'ai';
+                    }
+                };
 
                 const createSession = async () => {
                     if (loading.value) return null;
@@ -3991,6 +4007,12 @@ const appOptions = {
 
                 const title = computed(() => sessionMeta.value?.title || 'AI 编排会话');
                 const columnSplit = useWorkspaceColumnSplit('web-ssh-ai-session-sidebar-split');
+                const bodyGridStyle = computed(() => {
+                    if (isMobile.value || !showLivePane.value) {
+                        return null;
+                    }
+                    return columnSplit.splitGridStyle.value;
+                });
 
                 return {
                     resolvedId,
@@ -4001,9 +4023,13 @@ const appOptions = {
                     isMobile,
                     loading,
                     title,
+                    livePaneVisible,
+                    showLivePane,
+                    toggleLivePane,
                     loadMeta,
                     createSession,
                     splitGridStyle: columnSplit.splitGridStyle,
+                    bodyGridStyle,
                     startSplitResize: columnSplit.startSplitResize,
                 };
             },
@@ -4032,19 +4058,31 @@ const appOptions = {
                             <p>跨主机 AI 编排 · 会话 #{{ resolvedId }}</p>
                         </div>
                         <div class="actions">
+                            <button
+                                type="button"
+                                @click="toggleLivePane"
+                            >{{ showLivePane ? '隐藏现场' : '显示现场' }}</button>
                             <a href="#/ai/sessions">历史会话</a>
                         </div>
                     </div>
-                    <div v-if="isMobile" class="terminal-mobile-tabs" role="tablist">
+                    <div v-if="isMobile && showLivePane" class="terminal-mobile-tabs" role="tablist">
                         <button type="button" :class="{ active: mobilePane === 'live' }" @click="mobilePane = 'live'">现场</button>
                         <button type="button" :class="{ active: mobilePane === 'ai' }" @click="mobilePane = 'ai'">AI 对话</button>
                     </div>
                     <div
                         class="terminal-body ai-session-body"
-                        :class="{ 'is-mobile': isMobile, 'has-column-splitter': !isMobile }"
-                        :style="!isMobile ? splitGridStyle : null"
+                        :class="{
+                            'is-mobile': isMobile,
+                            'has-column-splitter': !isMobile && showLivePane,
+                            'live-pane-hidden': !showLivePane,
+                        }"
+                        :style="bodyGridStyle"
                     >
-                        <div class="terminal-left-column" :class="{ 'pane-mobile-active': !isMobile || mobilePane === 'live' }">
+                        <div
+                            v-if="showLivePane"
+                            class="terminal-left-column"
+                            :class="{ 'pane-mobile-active': !isMobile || mobilePane === 'live' }"
+                        >
                             <AiSessionLivePane
                                 :ai-session-id="resolvedId"
                                 :active-host="activeHost"
@@ -4058,7 +4096,7 @@ const appOptions = {
                             </div>
                         </div>
                         <div
-                            v-if="!isMobile"
+                            v-if="!isMobile && showLivePane"
                             class="workspace-column-splitter live-row-splitter"
                             title="拖动调整左右宽度"
                             @pointerdown.prevent="startSplitResize"

@@ -526,6 +526,20 @@
             box-sizing: border-box;
         }
 
+        .ai-session-body.live-pane-hidden:not(.is-mobile) {
+            grid-template-columns: 1fr min(960px, calc(100% - 24px)) 1fr !important;
+        }
+
+        .ai-session-body.live-pane-hidden:not(.is-mobile) .terminal-sidebar {
+            grid-column: 2;
+            width: 100%;
+            max-width: 960px;
+        }
+
+        .ai-session-body.live-pane-hidden.is-mobile {
+            grid-template-columns: minmax(0, 1fr) !important;
+        }
+
         .ai-session-layout {
             flex: 1;
             min-height: 0;
@@ -612,7 +626,7 @@
         .ai-assistant-header {
             display: flex;
             justify-content: space-between;
-            align-items: flex-start;
+            align-items: center;
             gap: 12px;
             margin-bottom: 10px;
             flex-shrink: 0;
@@ -642,6 +656,25 @@
             flex-wrap: wrap;
             gap: 8px;
             justify-content: flex-end;
+            align-items: center;
+        }
+
+        .ai-assistant-header .actions a {
+            display: inline-flex;
+            align-items: center;
+            min-height: 34px;
+            padding: 8px 10px;
+            border: 1px solid #3a4254;
+            border-radius: 6px;
+            background: #222733;
+            color: #8ab4ff;
+            white-space: nowrap;
+            line-height: 1.2;
+        }
+
+        .ai-assistant-header .actions a:hover {
+            border-color: #5b8def;
+            color: #b8d0ff;
         }
 
         .ai-assistant-panel {
@@ -1637,7 +1670,8 @@
                 flex-wrap: wrap;
             }
 
-            .ai-assistant-header .actions button {
+            .ai-assistant-header .actions button,
+            .ai-assistant-header .actions a {
                 min-height: 40px;
             }
 

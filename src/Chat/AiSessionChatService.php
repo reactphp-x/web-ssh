@@ -78,7 +78,6 @@ final class AiSessionChatService
             'approval' => $this->loadApproval($aiSessionId),
             'feedback' => $this->loadFeedback($aiSessionId),
             'generation' => $this->streamSession->getMeta($lockKey),
-            'session_reset_enabled' => $this->settings->aiSessionResetEnabled(),
             'urls' => [
                 'stream' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream',
                 'subscribe' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream/subscribe',
