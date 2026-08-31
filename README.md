@@ -1,6 +1,6 @@
 # reactphp-x/web-ssh
 
-浏览器里的 SSH 终端与管理平台。集中管理主机凭据、多标签 Web 终端、AI 辅助运维、实时旁路与会话回放。
+浏览器里的 SSH 终端与管理平台。集中管理主机凭据、多标签 Web 终端、AI 辅助运维、实时旁路、现场查看与会话回放。
 
 ## 解决的问题
 
@@ -18,7 +18,7 @@
 1. 在浏览器里打开终端，无需安装本地 SSH 客户端
 2. 集中管理主机与加密存储的凭据，支持跳板机一键连接
 3. 可选 **AI 助手**：描述任务 → 审核命令 → 自动执行并继续推理
-4. 实时旁路观看进行中的会话，结束后可回放 asciinema 录像
+4. **现场**查看单次会话输出，**实时现场**监控多路连接；结束后可现场滚动查看或 asciinema 回放
 5. 通过 Basic Auth + TOTP 双因子、速率限制与 Cookie 策略控制访问
 
 适合内网运维面板、开发跳板、小团队服务器管理等场景。**不应未经防护直接暴露到公网。**
@@ -30,9 +30,11 @@
 | **主机管理** | SQLite 存储主机、分组、标签；密码/私钥加密保存，支持跳板机 |
 | **Web 终端** | xterm.js 多标签 **PTY**，OpenSSH 子进程连接远端；支持 TUI（vim、htop、Claude Code 等） |
 | **AI 助手** | 终端页侧栏；自然语言描述任务，**批准后才执行** `run_ssh_command` |
-| **实时现场** | SSE 旁路观看**进行中**的 SSH 会话（只读，不可输入） |
+| **现场** | 终端页 / AI 编排页左栏：查看当前会话输出（手动输入 + AI 命令）；AI 编排支持持久化 transcript，刷新后可恢复 |
+| **实时现场** | 左侧菜单 `#/live`：多路 SSE 旁路监控**进行中**的 SSH 连接（只读，不可输入） |
 | **会话记录** | 连接起止、状态、耗时；自动写入 asciinema cast（`storage/recordings/`） |
-| **会话回放** | 对已结束会话播放终端录像；多分片、进度控制、窗口自适应 |
+| **现场查看** | 会话记录 / AI 会话历史中，以只读终端滚动查看完整输出（非定时回放） |
+| **会话回放** | 对已结束会话播放 asciinema 录像；多分片、进度控制、窗口自适应 |
 | **操作审计** | 主机增删改、AI 命令批准/拒绝等 API 操作日志 |
 | **登录鉴权** | HTTP Basic Auth + TOTP 双因子（可选 Cookie 登录页） |
 
@@ -40,23 +42,28 @@
 
 GitHub 可直接渲染下方 [Mermaid](https://github.blog/2022-02-14-include-diagrams-markdown-files-mermaid/) 图；本地预览需支持 Mermaid 的 Markdown 编辑器（如 VS Code 插件）。
 
-**整体架构** — 浏览器经 WebSocket 驱动交互终端（PTY），经 HTTP 驱动 AI 与实时旁路；AI 命令走独立 SSH exec，与 PTY 互不干扰：
+**整体架构** — 浏览器经 WebSocket 驱动交互终端（PTY），经 HTTP 驱动 AI、现场与实时旁路；AI 命令走独立 SSH exec，与 PTY 互不干扰：
 
 ```mermaid
 flowchart TB
     subgraph Browser["浏览器"]
         T["交互终端 xterm.js"]
-        A["AI 助手侧栏"]
-        L["实时现场"]
-        R["会话回放"]
+        A["AI 助手 / AI 编排"]
+        F["现场（单会话输出）"]
+        L["实时现场（多路监控 #/live）"]
+        R["会话回放 / 历史现场"]
     end
 
     subgraph Server["web-ssh 服务端"]
         API["HTTP /api/*"]
         WS["WebSocket /ws"]
         GW["SshTerminalGateway"]
-        BR["SshSessionBridge"]
-        AG["Neuron SshAgent"]
+        BR["SshSessionBridge<br/>conn_id"]
+        EB["SshExecBridge<br/>ai_session_id"]
+        LIVE["SshLiveRegistry<br/>SSE 旁路"]
+        TX["AiSessionLiveTranscript<br/>现场持久化"]
+        AG1["SshAgent<br/>终端 AI"]
+        AG2["OrchestratorAgent<br/>编排 AI"]
         REC["Session Recorder"]
         DB[("SQLite")]
     end
@@ -67,61 +74,80 @@ flowchart TB
 
     T <-->|input / output| WS
     A -->|chat / approval / feedback| API
-    L -->|SSE 只读| API
-    R -->|cast 录像| API
+    F -->|SSE / transcript| API
+    L -->|SSE 多路| API
+    R -->|cast / transcript| API
     WS --> GW
-    API --> AG
+    API --> AG1
+    API --> AG2
     GW --> BR
     GW <-->|PTY 交互 shell| SSH
-    BR -->|exec 独立通道| SSH
-    AG --> BR
+    AG1 --> BR
+    AG2 --> EB
+    BR -->|exec| SSH
+    EB -->|exec 分段| SSH
+    BR --> LIVE
+    EB --> LIVE
+    EB --> TX
     BR --> REC
+    EB --> REC
+    LIVE --> API
     API --> DB
 ```
 
-**终端页布局** — 登录与 AI 助手进入同一页面；左侧可在实时现场与交互终端间切换，右侧为 AI 对话：
+**终端页布局** — 登录与 AI 助手进入同一页面；左侧可在 **现场** 与交互终端间切换，右侧为 AI 对话：
 
 ```mermaid
 flowchart TB
     subgraph Page["终端页 /terminal/hostId/timestamp"]
-        SW["左侧顶部：实时现场 ⇄ 终端"]
+        SW["左侧顶部：现场 ⇄ 终端"]
         subgraph Left["左栏（二选一）"]
-            LIVE["实时现场 — 旁路 SSE，只读"]
+            FIELD["现场 — SSE 只读<br/>手动 PTY 输出 + AI 命令输出"]
             TERM["交互终端 — PTY，可输入 / TUI"]
         end
-        AI["右栏：AI 助手 — 描述任务、审核命令"]
+        AI["右栏：AI 助手 — conn_id，单主机"]
     end
-    SW --> LIVE
+    SW --> FIELD
     SW --> TERM
 ```
 
-**AI 助手工作流** — 只读工具自动执行；`run_ssh_command` 必须人工批准后才通过 exec 运行：
+**AI 编排页布局** — 不绑定单主机；左侧 **现场** 持久化 transcript，右侧跨主机对话：
+
+```mermaid
+flowchart TB
+    subgraph AiPage["AI 编排页 /ai/session/id"]
+        FIELD2["左栏：现场 — SSE + live log<br/>按主机 segment 分段输出"]
+        AI2["右栏：AI 编排 — ai_session_id<br/>list_hosts / run_ssh_command"]
+    end
+    FIELD2 --- AI2
+```
+
+**终端 AI 工作流** — 绑定 `conn_id`；只读工具自动执行，`run_ssh_command` 须人工批准：
 
 ```mermaid
 sequenceDiagram
     actor U as 用户
-    participant AI as AI 助手
-    participant S as 服务端
+    participant AI as SshAgent
+    participant S as SshSessionBridge
     participant H as 远端主机
 
     U->>AI: 描述运维任务
     opt 需要更多上下文
         AI->>S: get_terminal_context
-        S->>H: 读取终端最近输出
-        H-->>S: 输出片段
-        S-->>AI: 上下文
+        S-->>AI: 终端最近输出
     end
     opt 需求不明确
-        AI->>U: ask_user 选项反馈
+        AI->>U: ask_user
         U->>AI: 提交 / 跳过
     end
     AI->>U: 待审核命令
     alt 批准
         U->>AI: 批准
         AI->>S: run_ssh_command
-        S->>H: SSH exec 独立通道
+        S->>H: SSH exec
         H-->>S: stdout / stderr
         S-->>AI: 命令结果
+        Note over S: 输出写入现场 SSE<br/>[AI] 前缀，不进 PTY
         AI->>U: 继续推理或总结
     else 拒绝
         U->>AI: 拒绝
@@ -129,19 +155,48 @@ sequenceDiagram
     end
 ```
 
-> AI 命令输出以 `[AI] $ command` 形式写入**实时现场** SSE 流，不会混入左侧交互终端。
+**编排 AI 工作流** — 绑定 `ai_session_id`；可跨主机切换 segment，每场独立录像：
 
-### 终端、AI、实时、回放怎么选？
+```mermaid
+sequenceDiagram
+    actor U as 用户
+    participant AI as OrchestratorAgent
+    participant S as SshExecBridge
+    participant H as 远端主机
+
+    U->>AI: 描述跨主机任务
+    AI->>S: list_hosts
+    S-->>AI: 主机列表
+    AI->>U: 待审核命令（含 host_id）
+    alt 批准
+        U->>AI: 批准
+        AI->>S: run_ssh_command(host_id, …)
+        S->>H: SSH exec（切换主机则新 segment）
+        H-->>S: stdout / stderr
+        S-->>AI: 命令结果
+        Note over S: 写入现场 SSE + live log<br/>+ segment 录像
+        AI->>U: 继续推理或总结
+    else 拒绝
+        U->>AI: 拒绝
+    end
+```
+
+> AI 命令输出以 `[AI] $ command` 形式写入**现场** SSE 流，不会混入左侧交互终端。
+
+### 终端、AI、现场、实时现场、回放怎么选？
 
 | 你想做什么 | 用哪个 |
 |---|---|
 | 亲手输入命令、跑 TUI 程序 | **Web 终端**（PTY） |
 | 用自然语言让 AI 提议并执行 shell 命令 | **AI 助手**（需逐条批准） |
-| 实时看别人/自己的终端输出（会话进行中） | **实时现场** |
-| 事后查看某次连接屏幕上显示了什么 | **会话记录 → 回放** |
-| AI 跑命令时对照终端实际输出 | **AI 助手** + 侧栏展开 **实时现场** |
+| 当前连接里看手动输入 + AI 命令的实际输出 | 终端页左侧 **现场** |
+| 跨主机 AI 编排，刷新后继续看命令输出 | **AI 编排** → 左侧 **现场**（持久化 transcript） |
+| 同时监控多路进行中的 SSH 连接 | 菜单 **实时现场**（`#/live` 监控墙） |
+| 事后一次性滚动查看某次连接完整输出 | **会话记录 → 现场** |
+| 事后按时间轴播放终端录像 | **会话记录 → 回放** |
+| AI 跑命令时对照实际输出 | **AI 助手** + 左侧切到 **现场** |
 
-> **PTY 与 AI exec 是两条通道**：你在终端里的交互 shell（`cd`、环境变量、TUI）与 AI 执行的命令**相互独立**。AI 每次命令走独立 SSH exec，输出带 `[AI]` 前缀写入实时流，**不会**混进你的交互终端。
+> **PTY 与 AI exec 是两条通道**：你在终端里的交互 shell（`cd`、环境变量、TUI）与 AI 执行的命令**相互独立**。AI 每次命令走独立 SSH exec，输出带 `[AI]` 前缀写入**现场**流，**不会**混进你的交互终端。
 
 ### TUI 与远端 AI 开发工具
 
@@ -232,15 +287,15 @@ docker compose up --build
 1. 打开 `/login`，输入平台账号密码
 2. 首次使用绑定 TOTP（扫码）；之后每次登录输入 6 位验证码
 3. 在 **主机管理** 中新建主机（地址、端口、用户名、密码或私钥、可选跳板机）
-4. 进入 **终端** 建立 SSH 会话；主机列表 **登录** 默认左侧为交互终端，**AI 助手** 进入同一终端页但默认左侧为 **实时现场**
-5. 终端页右侧 **AI 助手**（需配置 `NEURON_AI_KEY`）可描述运维任务；**左侧顶部**可切换 **实时现场 / 终端**（终端可手动输入）
-6. **实时现场**（菜单或 AI 侧栏内）可旁路观看输出；**会话记录** 中可 **回放** 已结束的录像
+4. 进入 **终端** 建立 SSH 会话；主机列表 **登录** 默认左侧为交互终端，**AI 助手** 进入同一终端页但默认左侧为 **现场**
+5. 终端页右侧 **AI 助手**（需配置 `NEURON_AI_KEY`）可描述运维任务；**左侧顶部**可切换 **现场 / 终端**（终端可手动输入）
+6. 菜单 **实时现场** 可旁路监控多路连接；**会话记录** 中可 **现场** 滚动查看或 **回放** 已结束的录像
 
 未登录访问 `/` 会重定向到 `/login`；点击 **退出** 清除登录与 2FA Cookie。
 
 ## AI 助手
 
-SSH 连接成功后，终端页右侧出现 **AI 助手** 侧栏（移动端为「终端 | AI 助手」标签切换）。从 **主机管理** 点击 **AI 助手** 进入**同一终端页**，默认左侧为 **实时现场**，右侧为 AI 对话；可在**左侧顶部**切换为 **交互终端** 并手动输入。
+SSH 连接成功后，终端页右侧出现 **AI 助手** 侧栏（移动端为「现场 | AI 助手」或「终端 | AI 助手」标签切换）。从 **主机管理** 点击 **AI 助手** 进入**同一终端页**，默认左侧为 **现场**，右侧为 AI 对话；可在**左侧顶部**切换为 **交互终端** 并手动输入。
 
 ### 独立 AI 编排（跨主机）
 
@@ -248,8 +303,9 @@ SSH 连接成功后，终端页右侧出现 **AI 助手** 侧栏（移动端为�
 
 - **一个会话 = 一个聊天 thread**（`ai_session_id`），可在多台主机间切换执行
 - AI 通过 `list_hosts` 自动选机，`run_ssh_command(host_id, …)` 需人工批准
-- 左侧 **实时现场** 显示当前分段输出；切换主机时新开 **segment**（独立录像）
-- **历史会话**（`#/ai/sessions`）可继续对话；回放通过分段 manifest 顺序播放
+- 左侧 **现场** 显示当前分段命令输出；切换主机时新开 **segment**（独立录像）
+- 输出持久化到 `storage/neuron/ai-sessions/live/{id}.log`，刷新页面或 SSE 重连后可恢复
+- **历史会话**（`#/ai/sessions`）可继续对话；**现场** 查看完整 transcript，**回放** 按分段 manifest 顺序播放
 
 与终端页 AI 并存：终端 AI 绑定 `conn_id`（单主机 PTY）；编排 AI 绑定 `ai_session_id`（exec 通道，无需先打开终端）。
 
@@ -258,7 +314,8 @@ GET  /api/ai/sessions
 POST /api/ai/sessions
 GET  /api/ai/sessions/{id}/bootstrap
 POST /api/ai/sessions/{id}/chat/stream
-GET  /api/ai/sessions/{id}/live/stream
+GET  /api/ai/sessions/{id}/live/stream      # SSE，含 replay 事件
+GET  /api/ai/sessions/{id}/live/transcript  # 持久化现场文本
 GET  /api/ai/sessions/{id}/recording
 ```
 
@@ -271,7 +328,7 @@ GET  /api/ai/sessions/{id}/recording
    - **`ask_user`** — 需求不明确时弹出选项（单选/多选）
 3. 出现 **待审核命令** 时，在侧栏底部点击 **批准** 或 **拒绝**
 4. 批准后通过 **独立 SSH exec** 执行；输出回传 AI 继续推理（可多轮）
-5. 点击 **工具调用** 可弹窗查看每次工具的参数与返回
+5. 点击 **工具调用** 可展开查看每次工具的参数与返回（消息 timeline 与工具卡片交错展示）
 
 ### 配置
 
@@ -308,32 +365,54 @@ POST /api/ai/chat/reset            { conn_id }
 - 不支持交互式命令（vim、top、mysql 客户端等）；请在左侧 PTY 终端手动操作
 - 仅 `run_ssh_command` 会触发待审核；只读工具自动执行
 
-## 实时现场
+## 现场与实时现场
 
-通过 SSE 旁路推送终端输出，**只读**，不能代替终端输入。
+「**现场**」和「**实时现场**」是两个不同入口，不要混用：
 
-| 入口 | 用途 |
+| 名称 | 入口 | 用途 |
+|---|---|---|
+| **现场** | 终端页 / AI 编排页左栏；会话记录 / AI 会话历史的「现场」 | 查看**当前或历史**单次会话的输出（只读终端滚动） |
+| **实时现场** | 左侧菜单 `#/live` | **进行中**多路 SSH 连接同时旁路监控，支持分屏、拖拽、置顶 |
+
+### 现场
+
+通过 SSE 旁路推送终端输出（终端页），或持久化 transcript（AI 编排），**只读**，不能代替终端输入。
+
+| 入口 | 内容 |
 |---|---|
-| 左侧菜单 **实时现场** | 多路连接同时观看，支持分屏、拖拽调整 |
-| 终端页左侧切换 | 左侧顶部在 **实时现场** 与 **交互终端** 间切换 |
-| 菜单 **实时现场** | 多连接监控墙 |
+| 终端页左侧 **现场** | 当前 `conn_id` 的 SSE 流：含**手动 PTY 输出**与 **AI exec 输出**（`[AI]` 前缀） |
+| AI 编排页左侧 **现场** | 当前 `ai_session_id` 的命令输出；持久化到 live log，刷新可恢复 |
+| **会话记录 → 现场** | 从 asciinema cast 提取完整输出，只读滚动查看 |
+| **AI 会话 → 现场** | 从 `/live/transcript` 加载编排会话 transcript |
 
-AI 执行的命令输出会以 `[AI] $ command` / `[AI] exit N` 形式出现在实时流中。
+AI 执行的命令输出会以 `[AI] $ command` / `[AI] exit N` 形式出现在现场流中。
 
 ```text
-GET /api/live/sessions
+GET /api/live/sessions/{conn_id}/stream          # 终端页现场 SSE
+GET /api/ai/sessions/{id}/live/stream            # AI 编排现场 SSE
+GET /api/ai/sessions/{id}/live/transcript        # AI 编排持久化现场
+```
+
+### 实时现场
+
+左侧菜单 **实时现场**（`#/live`）用于运维监控：列出所有进行中的 SSH 连接，多窗口同时观看，会话结束后可保留面板直至手动清除。
+
+```text
+GET /api/live/sessions?include_finished=1
 GET /api/live/sessions/{conn_id}/stream   # SSE
 ```
 
-## 会话录像与回放
+## 会话录像、现场与回放
 
 SSH 连接建立后，服务端自动将终端 **输出** 写入 asciinema cast v2（`storage/recordings/{session_id}/`），会话结束时生成 `manifest.json`。
 
 | 项目 | 说明 |
 |---|---|
 | 格式 | cast v2（`.cast`），大文件自动分片 `part-001.cast`、`part-002.cast` … |
-| 内容 | 仅录制终端输出；不录键盘输入与 xterm 焦点/鼠标协议 |
-| 回放 | **会话记录** 页点击 **回放**；播放器自适应窗口 |
+| 内容 | 录制终端与 AI 命令输出；不录键盘输入与 xterm 焦点/鼠标协议 |
+| **现场** | **会话记录** 或 **AI 会话** 页点击 **现场**，只读终端滚动查看完整输出 |
+| **回放** | **会话记录** 页点击 **回放**；asciinema 播放器按时间轴播放 |
+| AI 编排 | 每个主机分段独立录像；编排会话另有 live transcript 供现场查看 |
 | 鉴权 | 与 REST API 相同（Basic Auth + 2FA） |
 
 ```text
@@ -415,15 +494,28 @@ BASIC_AUTH_PASSWORD=change-me
 
 ```text
 Browser (Vue + xterm.js)
-  ├── HTTP  /api/*     REST（主机、会话、AI、回放、实时）
-  └── WS    /ws?hostId=N
-        └── SshTerminalGateway
-              ├── SshTerminalSession → Ssh2Client → openssh PTY（交互终端）
-              └── SshSessionBridge
-                    ├── Live SSE（旁路输出）
-                    ├── Session Recorder（asciinema）
-                    └── SshExecRunner → openssh exec（AI 命令，独立通道）
-                          └── Neuron SshAgent（工具 + 审核工作流）
+  ├── 交互终端 ── WS /ws?hostId=N ── SshTerminalGateway ── PTY ── OpenSSH
+  ├── 现场（终端页）── SSE /api/live/sessions/{conn_id}/stream
+  ├── 现场（AI 编排）── SSE /api/ai/sessions/{id}/live/stream
+  │                      └── transcript /api/ai/sessions/{id}/live/transcript
+  ├── 实时现场（#/live）── SSE /api/live/sessions（多路监控）
+  ├── 历史现场 / 回放 ── cast manifest + asciinema-player
+  └── AI 对话 ── HTTP /api/ai/* 、/api/ai/sessions/*
+
+SshTerminalGateway
+  ├── SshTerminalSession → openssh PTY（交互终端，conn_id）
+  └── SshSessionBridge → exec + 现场 SSE + Recorder（终端 AI）
+
+SshExecBridge（编排 AI，ai_session_id）
+  ├── 按 host 分段 segment，每段独立 SSH exec + 录像
+  ├── SshLiveRegistry（现场 SSE 旁路）
+  └── AiSessionLiveTranscript（live log 持久化）
+
+Neuron Agents
+  ├── SshAgent + RunSshCommandTool（终端，conn_id）
+  └── OrchestratorAgent + list_hosts / run_ssh_command（编排，ai_session_id）
+
+Storage: SQLite（主机、会话、ai_sessions、审计）+ storage/recordings/ + storage/neuron/
 ```
 
 中间件栈：`AccessLog` → `JsonErrorHandler` → `BasicAuthHandler` → `TwoFactorAuthHandler` → 路由。

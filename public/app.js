@@ -946,6 +946,75 @@ const createSessionFieldView = () => {
     };
 };
 
+const useWorkspaceColumnSplit = (storageKey, defaultSplit = 0.38) => {
+    const sidebarSplit = ref(defaultSplit);
+
+    try {
+        const saved = localStorage.getItem(storageKey);
+        if (saved != null) {
+            const value = Number(saved);
+            if (Number.isFinite(value) && value >= 0.22 && value <= 0.72) {
+                sidebarSplit.value = value;
+            }
+        }
+    } catch (_) {
+        // ignore storage errors
+    }
+
+    const splitGridStyle = computed(() => {
+        const right = sidebarSplit.value;
+        const left = 1 - right;
+        return {
+            gridTemplateColumns: `minmax(280px, ${left}fr) 10px minmax(320px, ${right}fr)`,
+        };
+    });
+
+    const startSplitResize = (event) => {
+        const handle = event.currentTarget;
+        const body = handle.parentElement;
+        if (!body) {
+            return;
+        }
+
+        const splitterW = handle.offsetWidth || 10;
+        const minRightPx = 320;
+        const minLeftPx = 280;
+
+        const onMove = (e) => {
+            const rect = body.getBoundingClientRect();
+            const usable = rect.width - splitterW;
+            if (usable <= 0) {
+                return;
+            }
+            const rightPx = rect.right - e.clientX;
+            const split = Math.max(
+                minRightPx / usable,
+                Math.min((usable - minLeftPx) / usable, rightPx / usable),
+            );
+            sidebarSplit.value = split;
+        };
+
+        const onUp = () => {
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            document.body.classList.remove('workspace-resizing');
+            try {
+                localStorage.setItem(storageKey, String(sidebarSplit.value));
+            } catch (_) {
+                // ignore storage errors
+            }
+            window.dispatchEvent(new Event('resize'));
+        };
+
+        document.body.classList.add('workspace-resizing');
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp);
+        onMove(event);
+    };
+
+    return { splitGridStyle, startSplitResize };
+};
+
 const appOptions = {
     setup() {
         const route = ref(parseRoute());
@@ -3581,6 +3650,7 @@ const appOptions = {
                 });
 
                 const title = computed(() => sessionMeta.value?.title || 'AI 编排会话');
+                const columnSplit = useWorkspaceColumnSplit('web-ssh-ai-session-sidebar-split');
 
                 return {
                     resolvedId,
@@ -3593,6 +3663,8 @@ const appOptions = {
                     title,
                     loadMeta,
                     createSession,
+                    splitGridStyle: columnSplit.splitGridStyle,
+                    startSplitResize: columnSplit.startSplitResize,
                 };
             },
             template: `
@@ -3627,7 +3699,11 @@ const appOptions = {
                         <button type="button" :class="{ active: mobilePane === 'live' }" @click="mobilePane = 'live'">现场</button>
                         <button type="button" :class="{ active: mobilePane === 'ai' }" @click="mobilePane = 'ai'">AI 对话</button>
                     </div>
-                    <div class="terminal-body ai-session-body" :class="{ 'is-mobile': isMobile }">
+                    <div
+                        class="terminal-body ai-session-body"
+                        :class="{ 'is-mobile': isMobile, 'has-column-splitter': !isMobile }"
+                        :style="!isMobile ? splitGridStyle : null"
+                    >
                         <div class="terminal-left-column" :class="{ 'pane-mobile-active': !isMobile || mobilePane === 'live' }">
                             <AiSessionLivePane
                                 :ai-session-id="resolvedId"
@@ -3641,6 +3717,12 @@ const appOptions = {
                                 </span>
                             </div>
                         </div>
+                        <div
+                            v-if="!isMobile"
+                            class="workspace-column-splitter live-row-splitter"
+                            title="拖动调整左右宽度"
+                            @pointerdown.prevent="startSplitResize"
+                        ></div>
                         <div class="terminal-sidebar" :class="{ 'pane-mobile-active': !isMobile || mobilePane === 'ai' }">
                             <AiChatPanel
                                 :ai-session-id="resolvedId"
