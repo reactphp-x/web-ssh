@@ -36,6 +36,101 @@
 | **操作审计** | 主机增删改、AI 命令批准/拒绝等 API 操作日志 |
 | **登录鉴权** | HTTP Basic Auth + TOTP 双因子（可选 Cookie 登录页） |
 
+### 系统交互概览
+
+GitHub 可直接渲染下方 [Mermaid](https://github.blog/2022-02-14-include-diagrams-markdown-files-mermaid/) 图；本地预览需支持 Mermaid 的 Markdown 编辑器（如 VS Code 插件）。
+
+**整体架构** — 浏览器经 WebSocket 驱动交互终端（PTY），经 HTTP 驱动 AI 与实时旁路；AI 命令走独立 SSH exec，与 PTY 互不干扰：
+
+```mermaid
+flowchart TB
+    subgraph Browser["浏览器"]
+        T["交互终端 xterm.js"]
+        A["AI 助手侧栏"]
+        L["实时现场"]
+        R["会话回放"]
+    end
+
+    subgraph Server["web-ssh 服务端"]
+        API["HTTP /api/*"]
+        WS["WebSocket /ws"]
+        GW["SshTerminalGateway"]
+        BR["SshSessionBridge"]
+        AG["Neuron SshAgent"]
+        REC["Session Recorder"]
+        DB[("SQLite")]
+    end
+
+    subgraph Remote["远端主机"]
+        SSH["OpenSSH"]
+    end
+
+    T <-->|input / output| WS
+    A -->|chat / approval / feedback| API
+    L -->|SSE 只读| API
+    R -->|cast 录像| API
+    WS --> GW
+    API --> AG
+    GW --> BR
+    GW <-->|PTY 交互 shell| SSH
+    BR -->|exec 独立通道| SSH
+    AG --> BR
+    BR --> REC
+    API --> DB
+```
+
+**终端页布局** — 登录与 AI 助手进入同一页面；左侧可在实时现场与交互终端间切换，右侧为 AI 对话：
+
+```mermaid
+flowchart TB
+    subgraph Page["终端页 /terminal/hostId/timestamp"]
+        SW["左侧顶部：实时现场 ⇄ 终端"]
+        subgraph Left["左栏（二选一）"]
+            LIVE["实时现场 — 旁路 SSE，只读"]
+            TERM["交互终端 — PTY，可输入 / TUI"]
+        end
+        AI["右栏：AI 助手 — 描述任务、审核命令"]
+    end
+    SW --> LIVE
+    SW --> TERM
+```
+
+**AI 助手工作流** — 只读工具自动执行；`run_ssh_command` 必须人工批准后才通过 exec 运行：
+
+```mermaid
+sequenceDiagram
+    actor U as 用户
+    participant AI as AI 助手
+    participant S as 服务端
+    participant H as 远端主机
+
+    U->>AI: 描述运维任务
+    opt 需要更多上下文
+        AI->>S: get_terminal_context
+        S->>H: 读取终端最近输出
+        H-->>S: 输出片段
+        S-->>AI: 上下文
+    end
+    opt 需求不明确
+        AI->>U: ask_user 选项反馈
+        U->>AI: 提交 / 跳过
+    end
+    AI->>U: 待审核命令
+    alt 批准
+        U->>AI: 批准
+        AI->>S: run_ssh_command
+        S->>H: SSH exec 独立通道
+        H-->>S: stdout / stderr
+        S-->>AI: 命令结果
+        AI->>U: 继续推理或总结
+    else 拒绝
+        U->>AI: 拒绝
+        AI->>U: 调整方案
+    end
+```
+
+> AI 命令输出以 `[AI] $ command` 形式写入**实时现场** SSE 流，不会混入左侧交互终端。
+
 ### 终端、AI、实时、回放怎么选？
 
 | 你想做什么 | 用哪个 |
@@ -295,6 +390,8 @@ BASIC_AUTH_PASSWORD=change-me
 全局 SSH 候选密钥见 `config/ssh.php` 的 `identity_candidates`。主机凭据经 `APP_KEY` 加密存储；私钥可存 PEM 内容或服务器路径（路径仅在服务端解析）。
 
 ## 架构
+
+文字版与上图一致，便于复制到文档或终端：
 
 ```text
 Browser (Vue + xterm.js)
