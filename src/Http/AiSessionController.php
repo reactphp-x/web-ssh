@@ -483,10 +483,14 @@ final class AiSessionController
                     Sse::write($through, 'done', $done);
                 }
             } catch (Throwable $e) {
-                $this->streamSession->append($lockKey, 'error', ['message' => $e->getMessage()]);
+                $errorData = ['message' => $this->publicAiErrorMessage($e)];
+                if ($e instanceof ChatException && $e->data !== []) {
+                    $errorData = [...$errorData, ...$e->data];
+                }
+                $this->streamSession->append($lockKey, 'error', $errorData);
                 if ($through->isWritable()) {
                     $this->logAiError('stream', $e);
-                    Sse::write($through, 'error', ['message' => $this->publicAiErrorMessage($e)]);
+                    Sse::write($through, 'error', $errorData);
                 }
             } finally {
                 $this->streamSession->finish($lockKey);

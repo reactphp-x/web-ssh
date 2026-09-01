@@ -65,6 +65,12 @@ final class AiSessionChatService
         $this->ensureDirectories();
         $key = $this->threadKey($aiSessionId);
         $lockKey = $this->lockKey($username, $aiSessionId);
+        $this->repairIncompleteToolCalls($aiSessionId);
+        $approval = $this->loadApproval($aiSessionId);
+        $feedback = $this->loadFeedback($aiSessionId);
+        $generation = $approval === null && $feedback === null
+            ? $this->streamSession->getMeta($lockKey)
+            : null;
 
         return [
             'configured' => $this->settings->isConfigured(),
@@ -75,9 +81,9 @@ final class AiSessionChatService
             'messages' => $this->loadMessages($aiSessionId),
             'tool_calls' => $this->loadToolCalls($aiSessionId),
             'timeline' => $this->loadTimeline($aiSessionId),
-            'approval' => $this->loadApproval($aiSessionId),
-            'feedback' => $this->loadFeedback($aiSessionId),
-            'generation' => $this->streamSession->getMeta($lockKey),
+            'approval' => $approval,
+            'feedback' => $feedback,
+            'generation' => $generation,
             'urls' => [
                 'stream' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream',
                 'subscribe' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream/subscribe',

@@ -2972,6 +2972,9 @@ const appOptions = {
                 };
 
                 const reconcileInterruptUi = () => {
+                    if ((approval.value?.actions?.length ?? 0) > 0 || (feedback.value?.fields?.length ?? 0) > 0) {
+                        return;
+                    }
                     const lastUserIdx = messages.value.findLastIndex(
                         (item) => item.kind === 'message' && item.role === 'user',
                     );
@@ -2985,6 +2988,19 @@ const appOptions = {
                     );
                     if (hasCompletedSsh) {
                         approval.value = null;
+                    }
+                };
+
+                const applyInterruptFromPayload = (payload) => {
+                    if (!payload || typeof payload !== 'object') {
+                        return;
+                    }
+                    if (payload.approval && (payload.approval.actions?.length ?? 0) > 0) {
+                        approval.value = payload.approval;
+                    }
+                    if (payload.feedback && (payload.feedback.fields?.length ?? 0) > 0) {
+                        feedback.value = payload.feedback;
+                        resetFeedbackForm();
                     }
                 };
 
@@ -3028,18 +3044,25 @@ const appOptions = {
                         resetFeedbackForm();
                         errorText.value = '';
 
+                        const hasPendingInterrupt = (approval.value?.actions?.length ?? 0) > 0
+                            || (feedback.value?.fields?.length ?? 0) > 0;
                         const generation = json.data?.generation;
-                        generationActive.value = !!(generation?.active && !generation?.manual_stop);
-                        reconcileInterruptUi();
+                        generationActive.value = !hasPendingInterrupt
+                            && !!(generation?.active && !generation?.manual_stop);
+                        if (!hasPendingInterrupt) {
+                            reconcileInterruptUi();
+                        }
                         if (!options.skipGenerationResume && generationActive.value && isSessionMode.value && chatApi.value.subscribe) {
+                            const pendingApproval = approval.value;
+                            const pendingFeedback = feedback.value;
                             approval.value = null;
                             feedback.value = null;
                             resetFeedbackForm();
                             trimCurrentTurnAssistantsForResume();
                             streamEventIndex.value = 0;
                             await subscribeGeneration(0, {
-                                hadPendingApproval: false,
-                                hadPendingFeedback: false,
+                                hadPendingApproval: (pendingApproval?.actions?.length ?? 0) > 0,
+                                hadPendingFeedback: (pendingFeedback?.fields?.length ?? 0) > 0,
                                 partial: '',
                             });
                         }
@@ -3172,7 +3195,11 @@ const appOptions = {
                         scrollToBottom();
                     }
                     if (event === 'error') {
+                        applyInterruptFromPayload(data);
                         errorText.value = data.message || 'AI 错误';
+                        if (approval.value || feedback.value) {
+                            errorText.value = '';
+                        }
                         scrollToBottom();
                     }
                 };
@@ -3269,14 +3296,25 @@ const appOptions = {
                         const contentType = response.headers.get('content-type') || '';
                         if (!contentType.includes('text/event-stream')) {
                             const json = await response.json();
-                            if (json.code !== 0) throw new Error(json.msg || '请求失败');
+                            if (json.code !== 0) {
+                                applyInterruptFromPayload(json.data);
+                                const err = new Error(json.msg || '请求失败');
+                                err.payload = json.data;
+                                throw err;
+                            }
                             finalizeAssistant(json.data || {});
                             return;
                         }
                         await consumeSse(response, (event, data) => handleStreamEvent(event, data));
                     } catch (e) {
+                        if (e.payload) {
+                            applyInterruptFromPayload(e.payload);
+                        }
                         if (e.name !== 'AbortError') {
                             errorText.value = e.message || 'AI 请求失败';
+                            if (approval.value || feedback.value) {
+                                errorText.value = '';
+                            }
                         }
                     } finally {
                         busy.value = false;

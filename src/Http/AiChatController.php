@@ -236,8 +236,13 @@ final class AiChatController
                 }
             } catch (Throwable $e) {
                 if ($through->isWritable() && $e->getMessage() !== 'client disconnected') {
+                    $errorData = ['message' => $this->publicAiErrorMessage($e)];
+                    if ($e instanceof ChatException && $e->data !== []) {
+                        $errorData = [...$errorData, ...$e->data];
+                    }
+                    $this->streamSession->append($lockKey, 'error', $errorData);
                     $this->logAiError('stream', $e);
-                    Sse::write($through, 'error', ['message' => $this->publicAiErrorMessage($e)]);
+                    Sse::write($through, 'error', $errorData);
                 }
             } finally {
                 $this->streamSession->finish($lockKey);

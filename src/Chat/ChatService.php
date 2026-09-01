@@ -48,6 +48,12 @@ final class ChatService
     {
         $this->ensureDirectories();
         $lockKey = $this->lockKey($username, $connId);
+        $this->repairIncompleteToolCalls($connId);
+        $approval = $this->loadApproval($connId);
+        $feedback = $this->loadFeedback($connId);
+        $generation = $approval === null && $feedback === null
+            ? $this->streamSession->getMeta($lockKey)
+            : null;
 
         return [
             'configured' => $this->settings->isConfigured(),
@@ -57,9 +63,9 @@ final class ChatService
             'messages' => $this->loadMessages($connId),
             'tool_calls' => $this->loadToolCalls($connId),
             'timeline' => $this->loadTimeline($connId),
-            'approval' => $this->loadApproval($connId),
-            'feedback' => $this->loadFeedback($connId),
-            'generation' => $this->streamSession->getMeta($lockKey),
+            'approval' => $approval,
+            'feedback' => $feedback,
+            'generation' => $generation,
         ];
     }
 
