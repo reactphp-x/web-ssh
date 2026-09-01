@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace App\Middleware;
 
+use App\Config\AuthSessionConfig;
 use App\Http\RequestAuth;
 use App\Security\BasicAuthCookie;
+use App\Security\SessionRenewal;
 use App\Service\AuthRateLimiter;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -22,6 +24,7 @@ final class BasicAuthHandler
         private readonly string $realm = 'Web SSH',
         private readonly array $publicPaths = ['/health'],
         private readonly ?AuthRateLimiter $loginRateLimiter = null,
+        private readonly ?AuthSessionConfig $sessionConfig = null,
     ) {
     }
 
@@ -48,9 +51,9 @@ final class BasicAuthHandler
             return $this->acceptAuthenticated($request, $next, $credentials[0]);
         }
 
-        $cookieUser = BasicAuthCookie::read($request);
-        if ($cookieUser !== null && hash_equals($this->username, $cookieUser)) {
-            return $this->acceptAuthenticated($request, $next, $cookieUser);
+        $cookieDetails = BasicAuthCookie::readDetails($request);
+        if ($cookieDetails !== null && hash_equals($this->username, $cookieDetails['username'])) {
+            return $this->acceptAuthenticated($request, $next, $cookieDetails['username'], $cookieDetails);
         }
 
         if ($this->shouldRedirectToLogin($request)) {
@@ -84,12 +87,34 @@ final class BasicAuthHandler
         return 'login:' . RequestAuth::clientIp($request);
     }
 
+    /**
+     * @param array{username: string, expiresAt: int}|null $cookieDetails
+     */
     private function acceptAuthenticated(
         ServerRequestInterface $request,
         callable $next,
         string $username,
+        ?array $cookieDetails = null,
     ): ResponseInterface|PromiseInterface {
-        return $next($request->withAttribute('auth_user', $username));
+        $responsePromise = resolve($next($request->withAttribute('auth_user', $username)));
+
+        if ($cookieDetails === null || $this->sessionConfig === null) {
+            return $responsePromise;
+        }
+
+        if (!SessionRenewal::shouldRenew(
+            $cookieDetails['expiresAt'],
+            $this->sessionConfig->ttl(),
+            $this->sessionConfig->renewInterval(),
+        )) {
+            return $responsePromise;
+        }
+
+        $ttl = $this->sessionConfig->ttl();
+
+        return $responsePromise->then(
+            static fn (ResponseInterface $response): ResponseInterface => BasicAuthCookie::attach($response, $username, $ttl),
+        );
     }
 
     private function unauthorizedResponse(): Response

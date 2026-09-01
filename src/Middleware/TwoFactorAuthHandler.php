@@ -4,14 +4,17 @@ declare(strict_types=1);
 
 namespace App\Middleware;
 
+use App\Config\AuthSessionConfig;
 use App\Http\JsonResponse;
 use App\Http\RequestAuth;
 use App\Repository\TwoFactorRepository;
 use App\Repository\TwoFactorSessionRepository;
+use App\Security\SessionRenewal;
 use App\Security\TwoFactorCookie;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use React\Promise\PromiseInterface;
+use function React\Promise\resolve;
 
 final class TwoFactorAuthHandler
 {
@@ -20,6 +23,7 @@ final class TwoFactorAuthHandler
         private readonly TwoFactorRepository $twoFactor,
         private readonly TwoFactorSessionRepository $sessions,
         private readonly array $exemptPaths = [],
+        private readonly ?AuthSessionConfig $sessionConfig = null,
     ) {
     }
 
@@ -46,16 +50,39 @@ final class TwoFactorAuthHandler
 
         return $this->sessions
             ->findValid($token, $username)
-            ->then(function (?array $session) use ($request, $next, $path, $username): ResponseInterface|PromiseInterface {
-                if ($session !== null) {
-                    return $next($request->withAttribute('2fa_verified', true));
+            ->then(function (?array $session) use ($request, $next, $path, $username, $token): ResponseInterface|PromiseInterface {
+                if ($session === null) {
+                    if ($this->allowsWithoutSession($path)) {
+                        return $next($request);
+                    }
+
+                    return $this->deny($username);
                 }
 
-                if ($this->allowsWithoutSession($path)) {
-                    return $next($request);
-                }
+                $shouldRenew = $this->sessionConfig !== null
+                    && SessionRenewal::shouldRenew(
+                        strtotime($session['expires_at']),
+                        $this->sessionConfig->ttl(),
+                        $this->sessionConfig->renewInterval(),
+                    );
 
-                return $this->deny($username);
+                $renewPromise = $shouldRenew
+                    ? $this->sessions->extend($token, $username, $this->sessionConfig->ttl())
+                    : resolve(null);
+
+                return $renewPromise->then(
+                    function () use ($request, $next, $token, $shouldRenew): ResponseInterface|PromiseInterface {
+                        $responsePromise = resolve($next($request->withAttribute('2fa_verified', true)));
+
+                        if (!$shouldRenew) {
+                            return $responsePromise;
+                        }
+
+                        return $responsePromise->then(
+                            static fn (ResponseInterface $response): ResponseInterface => TwoFactorCookie::attach($response, $token),
+                        );
+                    },
+                );
             });
     }
 

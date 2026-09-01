@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http;
 
+use App\Config\AuthSessionConfig;
 use App\Bootstrap\DatabaseBootstrap;
 use App\Config\BasicAuthConfig;
 use App\Config\DatabaseConfig;
@@ -96,10 +97,12 @@ final class WebAppFactory
         $authRateLimits = new AuthRateLimitRepository($db);
         $loginRateLimiter = new AuthRateLimiter($authRateLimits, maxFailures: 10, lockSeconds: 900);
         $twoFactorRateLimiter = new AuthRateLimiter($authRateLimits, maxFailures: 5, lockSeconds: 900);
+        $authSessionConfig = AuthSessionConfig::load($env);
         TwoFactorCookie::configure(filter_var($env->nullableString('COOKIE_SECURE'), FILTER_VALIDATE_BOOL));
         BasicAuthCookie::configure(
             filter_var($env->nullableString('COOKIE_SECURE'), FILTER_VALIDATE_BOOL),
             $cipher->key(),
+            $authSessionConfig->ttl(),
         );
         $sshConfig = SshConfig::load($env);
         Ssh2Client::setConnectTimeout($sshConfig->connectTimeout());
@@ -114,7 +117,7 @@ final class WebAppFactory
         $aiLiveTranscript = new AiSessionLiveTranscript($aiSessionStoragePaths);
         $sessionBridge = new SshSessionBridge($liveRegistry, $sessionRecorder);
         $execBridge = new SshExecBridge($hostService, $hosts, $aiSessionRepo, $sessionService, $liveRegistry, $sessionRecorder, $aiLiveTranscript);
-        $basicAuth = BasicAuthConfig::load($env, $loginRateLimiter)->handler();
+        $basicAuth = BasicAuthConfig::load($env, $loginRateLimiter, $authSessionConfig)->handler();
         $twoFactorEnabled = $basicAuth !== null;
         $twoFactorService = $twoFactorEnabled
             ? new TwoFactorService(trim($env->string('BASIC_AUTH_REALM', 'Web SSH')))
@@ -131,7 +134,7 @@ final class WebAppFactory
             $twoFactorEnabled ? $twoFactorRepo : null,
         );
         $twoFactor = $twoFactorEnabled && $twoFactorService !== null
-            ? new TwoFactorController($twoFactorRepo, $twoFactorSessions, $twoFactorService, $twoFactorRateLimiter)
+            ? new TwoFactorController($twoFactorRepo, $twoFactorSessions, $twoFactorService, $twoFactorRateLimiter, $authSessionConfig)
             : null;
         $auth = new AuthController(
             $twoFactorEnabled ? $twoFactorSessions : null,
@@ -217,7 +220,7 @@ final class WebAppFactory
 
         if ($basicAuth !== null) {
             $middleware[] = $basicAuth;
-            $middleware[] = new TwoFactorAuthHandler($twoFactorRepo, $twoFactorSessions);
+            $middleware[] = new TwoFactorAuthHandler($twoFactorRepo, $twoFactorSessions, [], $authSessionConfig);
         }
 
         $app = new App(...$middleware);

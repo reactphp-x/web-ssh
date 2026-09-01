@@ -66,4 +66,14 @@ final class TwoFactorSessionRepository
     {
         return $this->db->query('DELETE FROM two_factor_sessions WHERE expires_at <= datetime(\'now\')');
     }
+
+    public function extend(string $token, string $username, int $ttlSeconds): PromiseInterface
+    {
+        return $this->db->query(
+            'UPDATE two_factor_sessions
+             SET expires_at = datetime(\'now\', ?)
+             WHERE token = ? AND username = ? AND expires_at > datetime(\'now\')',
+            ['+' . $ttlSeconds . ' seconds', $token, $username],
+        );
+    }
 }

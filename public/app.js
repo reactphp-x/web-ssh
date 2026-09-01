@@ -1,5 +1,25 @@
 const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
 
+const AUTH_KEEPALIVE_MS = 30 * 60 * 1000;
+
+let authStateHandler = null;
+
+const handleAuthFailure = (status, code, url) => {
+    if (status === 401) {
+        if (!url.includes('/api/login')) {
+            location.href = '/login';
+        }
+        return true;
+    }
+    if (status === 403 && code === 'two_factor_required') {
+        if (authStateHandler) {
+            authStateHandler.onTwoFactorRequired();
+        }
+        return true;
+    }
+    return false;
+};
+
 const api = {
     async request(method, url, body) {
         const options = {
@@ -16,6 +36,7 @@ const api = {
             error.status = response.status;
             error.code = data.code || '';
             error.payload = data;
+            handleAuthFailure(response.status, error.code, url);
             throw error;
         }
         return data;
@@ -1197,18 +1218,51 @@ const appOptions = {
             route.value = parseRoute();
         };
 
+        let authKeepaliveTimer = null;
+
+        const startAuthKeepalive = () => {
+            authKeepaliveTimer = setInterval(async () => {
+                try {
+                    await api.get('/api/me');
+                } catch (error) {
+                    if (error.status === 401) {
+                        location.href = '/login';
+                    } else if (error.status === 403 && error.code === 'two_factor_required') {
+                        twoFactorVerified.value = false;
+                    }
+                }
+            }, AUTH_KEEPALIVE_MS);
+        };
+
         onMounted(async () => {
+            authStateHandler = {
+                onTwoFactorRequired() {
+                    twoFactorVerified.value = false;
+                },
+            };
             window.addEventListener('hashchange', onHashChange);
             try {
                 await refreshAuthState();
             } catch (error) {
-                setFlash(error.message, 'err');
+                if (error.status === 401) {
+                    location.href = '/login';
+                    return;
+                }
+                if (!(error.status === 403 && error.code === 'two_factor_required')) {
+                    setFlash(error.message, 'err');
+                }
             } finally {
                 twoFactorReady.value = true;
             }
+            startAuthKeepalive();
         });
 
         onBeforeUnmount(() => {
+            authStateHandler = null;
+            if (authKeepaliveTimer !== null) {
+                clearInterval(authKeepaliveTimer);
+                authKeepaliveTimer = null;
+            }
             window.removeEventListener('hashchange', onHashChange);
         });
 

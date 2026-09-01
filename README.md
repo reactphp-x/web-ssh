@@ -740,9 +740,10 @@ GET /api/sessions/{id}/recording/part-001.cast
 
 | 层 | 机制 | Cookie |
 |---|---|---|
-| 账号密码 | `/api/login` 或 `Authorization: Basic` | `web_ssh_auth`（12h，HMAC 签名） |
-| 双因子 | `/api/2fa/verify` | `web_ssh_2fa`（服务端 session 12h） |
+| 账号密码 | `/api/login` 或 `Authorization: Basic` | `web_ssh_auth`（滑动空闲 4h，HMAC 签名） |
+| 双因子 | `/api/2fa/verify` | `web_ssh_2fa`（服务端 session 滑动空闲 4h） |
 
+- **滑动续期**：持续使用（API 请求或前端每 30 分钟 keepalive）会自动延长登录与 2FA 会话；空闲超过 `AUTH_SESSION_TTL`（默认 4 小时）后才需重新登录/验证
 - 同一账号 **2FA 仅保留一个有效会话**（新验证会使旧 session 失效）
 - HTTPS 部署时设置 `COOKIE_SECURE=true`
 - 公开路径（无需 Basic Auth）：`/health`、`/login`、`/logout`、`/api/login`
@@ -792,6 +793,8 @@ SESSION_RECORDING_DIR=storage/recordings
 
 # 安全
 COOKIE_SECURE=false
+AUTH_SESSION_TTL=14400
+AUTH_SESSION_RENEW_INTERVAL=1800
 BASIC_AUTH_USER=admin
 BASIC_AUTH_PASSWORD=change-me
 ```

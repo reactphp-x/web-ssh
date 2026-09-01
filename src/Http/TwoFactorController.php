@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http;
 
+use App\Config\AuthSessionConfig;
 use App\Repository\TwoFactorRepository;
 use App\Repository\TwoFactorSessionRepository;
 use App\Security\TwoFactorCookie;
@@ -16,13 +17,12 @@ use function React\Promise\resolve;
 
 final class TwoFactorController
 {
-    private const SESSION_TTL = 43200;
-
     public function __construct(
         private readonly TwoFactorRepository $twoFactor,
         private readonly TwoFactorSessionRepository $sessions,
         private readonly TwoFactorService $service,
         private readonly AuthRateLimiter $rateLimiter,
+        private readonly AuthSessionConfig $sessionConfig,
     ) {
     }
 
@@ -189,7 +189,7 @@ final class TwoFactorController
         return $this->sessions
             ->deleteByUsername($username)
             ->then(fn () => $this->sessions->purgeExpired())
-            ->then(fn () => $this->sessions->create($username, $token, self::SESSION_TTL))
+            ->then(fn () => $this->sessions->create($username, $token, $this->sessionConfig->ttl()))
             ->then(fn () => $this->rateLimiter->clear($this->rateBucket($username)))
             ->then(static fn () => TwoFactorCookie::attach(
                 JsonResponse::json(['message' => $message, 'verified' => true]),

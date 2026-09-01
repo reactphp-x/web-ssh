@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Config;
 
+use App\Config\AuthSessionConfig;
 use App\Middleware\BasicAuthHandler;
 use App\Service\AuthRateLimiter;
 use ReactphpX\Framework\Environment;
@@ -15,8 +16,11 @@ final class BasicAuthConfig
     ) {
     }
 
-    public static function load(Environment $env, ?AuthRateLimiter $loginRateLimiter = null): self
-    {
+    public static function load(
+        Environment $env,
+        ?AuthRateLimiter $loginRateLimiter = null,
+        ?AuthSessionConfig $sessionConfig = null,
+    ): self {
         $username = trim($env->nullableString('BASIC_AUTH_USER') ?? '');
         $password = $env->nullableString('BASIC_AUTH_PASSWORD') ?? '';
 
@@ -27,7 +31,14 @@ final class BasicAuthConfig
         $realm = trim($env->string('BASIC_AUTH_REALM', 'Web SSH'));
         $publicPaths = self::parsePublicPaths($env->nullableString('BASIC_AUTH_PUBLIC_PATHS'));
 
-        return new self(new BasicAuthHandler($username, $password, $realm, $publicPaths, $loginRateLimiter));
+        return new self(new BasicAuthHandler(
+            $username,
+            $password,
+            $realm,
+            $publicPaths,
+            $loginRateLimiter,
+            $sessionConfig,
+        ));
     }
 
     public function handler(): ?BasicAuthHandler

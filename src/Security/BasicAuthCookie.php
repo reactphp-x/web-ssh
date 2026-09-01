@@ -12,13 +12,15 @@ final class BasicAuthCookie
 {
     public const NAME = 'web_ssh_auth';
 
-    public const TTL = 43200;
+    public const TTL = 14400;
 
     private static bool $secure = false;
 
     private static ?string $signingKey = null;
 
-    public static function configure(bool $secure, string $signingKey): void
+    private static int $defaultTtl = self::TTL;
+
+    public static function configure(bool $secure, string $signingKey, ?int $ttl = null): void
     {
         if (strlen($signingKey) !== 32) {
             throw new InvalidArgumentException('Basic auth cookie signing key must be 32 bytes.');
@@ -26,9 +28,22 @@ final class BasicAuthCookie
 
         self::$secure = $secure;
         self::$signingKey = $signingKey;
+        if ($ttl !== null) {
+            self::$defaultTtl = $ttl;
+        }
     }
 
     public static function read(ServerRequestInterface $request): ?string
+    {
+        $details = self::readDetails($request);
+
+        return $details['username'] ?? null;
+    }
+
+    /**
+     * @return array{username: string, expiresAt: int}|null
+     */
+    public static function readDetails(ServerRequestInterface $request): ?array
     {
         if (self::$signingKey === null) {
             return null;
@@ -39,11 +54,13 @@ final class BasicAuthCookie
             return null;
         }
 
-        return self::verify($value);
+        return self::verifyDetails($value);
     }
 
-    public static function attach(ResponseInterface $response, string $username, int $ttl = self::TTL): ResponseInterface
+    public static function attach(ResponseInterface $response, string $username, ?int $ttl = null): ResponseInterface
     {
+        $ttl ??= self::$defaultTtl;
+
         if (self::$signingKey === null) {
             throw new InvalidArgumentException('Basic auth cookie is not configured.');
         }
@@ -87,7 +104,10 @@ final class BasicAuthCookie
         return null;
     }
 
-    private static function verify(string $value): ?string
+    /**
+     * @return array{username: string, expiresAt: int}|null
+     */
+    private static function verifyDetails(string $value): ?array
     {
         if (self::$signingKey === null) {
             return null;
@@ -131,7 +151,10 @@ final class BasicAuthCookie
             return null;
         }
 
-        return $username;
+        return [
+            'username' => $username,
+            'expiresAt' => $expiresAt,
+        ];
     }
 
     private static function buildCookie(string $value, int $maxAge): string

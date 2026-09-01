@@ -43,5 +43,21 @@ final class BasicAuthCookieTest extends TestCase
         ]);
 
         self::assertNull(BasicAuthCookie::read($request));
+        self::assertNull(BasicAuthCookie::readDetails($request));
+    }
+
+    public function testReadDetailsReturnsUsernameAndExpiry(): void
+    {
+        $response = BasicAuthCookie::attach(new Response(200), 'admin', 3600);
+        preg_match('/' . preg_quote(BasicAuthCookie::NAME, '/') . '=([^;]+)/', $response->getHeaderLine('Set-Cookie'), $matches);
+        $request = new ServerRequest('GET', 'http://localhost/', [
+            'Cookie' => [BasicAuthCookie::NAME . '=' . rawurldecode($matches[1])],
+        ]);
+
+        $details = BasicAuthCookie::readDetails($request);
+
+        self::assertNotNull($details);
+        self::assertSame('admin', $details['username']);
+        self::assertGreaterThan(time(), $details['expiresAt']);
     }
 }

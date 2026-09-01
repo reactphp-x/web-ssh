@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace App\Tests;
 
+use App\Config\AuthSessionConfig;
 use App\Config\DatabaseConfig;
 use App\Database\SqliteClientFactory;
 use App\Middleware\TwoFactorAuthHandler;
 use App\Repository\TwoFactorRepository;
 use App\Repository\TwoFactorSessionRepository;
 use App\Security\SecretCipher;
+use App\Security\TwoFactorCookie;
 use React\Http\Message\Response;
 use React\Http\Message\ServerRequest;
 use PHPUnit\Framework\TestCase;
@@ -34,9 +36,12 @@ final class TwoFactorAuthHandlerTest extends TestCase
         $db->close();
 
         $client = SqliteClientFactory::get(new DatabaseConfig($this->dbPath, false));
+        $sessionConfig = new AuthSessionConfig(14400, 1800);
         $this->middleware = new TwoFactorAuthHandler(
             new TwoFactorRepository($client, $this->cipher),
             new TwoFactorSessionRepository($client),
+            [],
+            $sessionConfig,
         );
     }
 
@@ -120,6 +125,36 @@ final class TwoFactorAuthHandlerTest extends TestCase
         ));
 
         self::assertSame(200, $response->getStatusCode());
+    }
+
+    public function testRenewsTwoFactorSessionWhenNearExpiry(): void
+    {
+        $this->seedTwoFactor('admin', 'Phone');
+        $token = str_repeat('d', 64);
+        $db = new \SQLite3($this->dbPath);
+        $db->exec(sprintf(
+            "INSERT INTO two_factor_sessions (token, username, expires_at) VALUES ('%s', 'admin', datetime('now', '+10 minutes'))",
+            \SQLite3::escapeString($token),
+        ));
+        $db->close();
+
+        $before = (new \SQLite3($this->dbPath))->querySingle(
+            "SELECT expires_at FROM two_factor_sessions WHERE token = '" . \SQLite3::escapeString($token) . "'",
+        );
+
+        $response = $this->await(($this->middleware)(
+            $this->request('/api/hosts', 'admin', 'web_ssh_2fa=' . $token),
+            static fn () => new Response(200, [], 'ok'),
+        ));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertStringContainsString(TwoFactorCookie::NAME . '=', $response->getHeaderLine('Set-Cookie'));
+
+        $after = (new \SQLite3($this->dbPath))->querySingle(
+            "SELECT expires_at FROM two_factor_sessions WHERE token = '" . \SQLite3::escapeString($token) . "'",
+        );
+
+        self::assertGreaterThan(strtotime((string) $before), strtotime((string) $after));
     }
 
     public function testSkipsAnonymousUser(): void
