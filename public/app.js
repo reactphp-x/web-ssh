@@ -3662,7 +3662,7 @@ const appOptions = {
                             <div class="ai-token-usage-row">
                                 <span>{{ formatTokenCount(tokenUsage.context_used) }} / {{ formatTokenCount(tokenUsage.context_window) }}</span>
                                 <span class="ai-token-percent">{{ tokenUsage.context_percent }}%</span>
-                                <span v-if="tokenUsage.cached_input_tokens > 0" class="ai-token-cache">缓存 {{ formatTokenCount(tokenUsage.cached_input_tokens) }}</span>
+                                <span v-if="tokenUsage.cached_input_tokens > 0" class="ai-token-cache">缓存 {{ formatTokenCount(tokenUsage.cached_input_tokens) }} · 命中率 {{ tokenUsage.cache_hit_percent }}%</span>
                             </div>
                             <div class="ai-token-bar"><div :style="{ width: tokenUsage.context_percent + '%' }"></div></div>
                         </div>

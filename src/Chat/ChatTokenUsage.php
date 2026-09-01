@@ -18,6 +18,7 @@ use function json_decode;
 use function max;
 use function min;
 use function round;
+use function strtolower;
 
 final class ChatTokenUsage
 {
@@ -26,7 +27,8 @@ final class ChatTokenUsage
      *     context_used: int,
      *     context_window: int,
      *     context_percent: int,
-     *     cached_input_tokens: int
+     *     cached_input_tokens: int,
+     *     cache_hit_percent: int
      * }
      */
     public static function summarize(ChatFileHistory $history, ChatSettings $settings): array
@@ -42,14 +44,37 @@ final class ChatTokenUsage
             ? min(100, (int) round($contextUsed / $contextWindow * 100))
             : 0;
 
+        $inference = self::lastInferenceUsage($history, $messages);
+
         return [
             'context_used' => $contextUsed,
             'context_window' => $contextWindow,
             'context_percent' => $percent,
-            'cached_input_tokens' => self::lastCachedInputTokens($history, $messages),
+            'cached_input_tokens' => $inference['cached_input_tokens'],
+            'cache_hit_percent' => self::cacheHitPercent(
+                $inference['input_tokens'],
+                $inference['cached_input_tokens'],
+                $settings->provider(),
+            ),
         ];
     }
 
+    public static function cacheHitPercent(int $inputTokens, int $cachedInputTokens, string $provider): int
+    {
+        if ($cachedInputTokens <= 0) {
+            return 0;
+        }
+
+        $denominator = strtolower($provider) === 'anthropic'
+            ? $inputTokens + $cachedInputTokens
+            : $inputTokens;
+
+        if ($denominator <= 0) {
+            return 0;
+        }
+
+        return min(100, (int) round($cachedInputTokens / $denominator * 100));
+    }
 
     /**
      * @param callable(string, array<string, mixed>): void $emit
@@ -79,8 +104,9 @@ final class ChatTokenUsage
 
     /**
      * @param list<Message> $messages
+     * @return array{input_tokens: int, cached_input_tokens: int}
      */
-    private static function lastCachedInputTokens(ChatFileHistory $history, array $messages): int
+    private static function lastInferenceUsage(ChatFileHistory $history, array $messages): array
     {
         for ($i = count($messages) - 1; $i >= 0; $i--) {
             $message = $messages[$i];
@@ -91,26 +117,32 @@ final class ChatTokenUsage
             $usage = $message->getUsage();
             if ($usage instanceof Usage) {
                 if ($usage->cachedInputTokens > 0) {
-                    return $usage->cachedInputTokens;
+                    return [
+                        'input_tokens' => $usage->inputTokens,
+                        'cached_input_tokens' => $usage->cachedInputTokens,
+                    ];
                 }
 
                 break;
             }
         }
 
-        return self::lastCachedFromRawFile($history);
+        return self::lastInferenceUsageFromRawFile($history);
     }
 
-    private static function lastCachedFromRawFile(ChatFileHistory $history): int
+    /**
+     * @return array{input_tokens: int, cached_input_tokens: int}
+     */
+    private static function lastInferenceUsageFromRawFile(ChatFileHistory $history): array
     {
         $path = $history->storageFilePath();
         if (!is_file($path)) {
-            return 0;
+            return ['input_tokens' => 0, 'cached_input_tokens' => 0];
         }
 
         $raw = json_decode((string) file_get_contents($path), true);
         if (!is_array($raw)) {
-            return 0;
+            return ['input_tokens' => 0, 'cached_input_tokens' => 0];
         }
 
         for ($i = count($raw) - 1; $i >= 0; $i--) {
@@ -125,9 +157,12 @@ final class ChatTokenUsage
                 continue;
             }
 
-            return max(0, (int) ($message['usage']['cached_input_tokens'] ?? 0));
+            return [
+                'input_tokens' => max(0, (int) ($message['usage']['input_tokens'] ?? 0)),
+                'cached_input_tokens' => max(0, (int) ($message['usage']['cached_input_tokens'] ?? 0)),
+            ];
         }
 
-        return 0;
+        return ['input_tokens' => 0, 'cached_input_tokens' => 0];
     }
 }

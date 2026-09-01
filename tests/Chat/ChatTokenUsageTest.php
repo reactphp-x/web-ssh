@@ -29,6 +29,7 @@ final class ChatTokenUsageTest extends TestCase
             self::assertSame(10000, $summary['context_window']);
             self::assertSame(0, $summary['context_percent']);
             self::assertSame(0, $summary['cached_input_tokens']);
+            self::assertSame(0, $summary['cache_hit_percent']);
         } finally {
             $this->cleanup($dir, 'empty');
         }
@@ -98,9 +99,27 @@ final class ChatTokenUsageTest extends TestCase
             $summary = ChatTokenUsage::summarize($history, $this->settings(10000));
 
             self::assertSame(512, $summary['cached_input_tokens']);
+            self::assertSame(51, $summary['cache_hit_percent']);
         } finally {
             $this->cleanup($dir, 'mem');
         }
+    }
+
+
+    public function testOpenAiStyleCacheHitPercent(): void
+    {
+        self::assertSame(90, ChatTokenUsage::cacheHitPercent(9000, 8100, 'openai'));
+        self::assertSame(90, ChatTokenUsage::cacheHitPercent(9000, 8100, 'zai'));
+    }
+
+    public function testAnthropicStyleCacheHitPercent(): void
+    {
+        self::assertSame(94, ChatTokenUsage::cacheHitPercent(500, 8200, 'anthropic'));
+    }
+
+    public function testCacheHitPercentZeroWhenNoCache(): void
+    {
+        self::assertSame(0, ChatTokenUsage::cacheHitPercent(9000, 0, 'openai'));
     }
 
 
@@ -132,7 +151,7 @@ final class ChatTokenUsageTest extends TestCase
         }
     }
 
-    private function settings(int $contextWindow): ChatSettings
+    private function settings(int $contextWindow, string $provider = 'openai'): ChatSettings
     {
         $root = dirname(__DIR__, 2);
         $environment = Environment::load($root, '.env');
@@ -140,7 +159,7 @@ final class ChatTokenUsageTest extends TestCase
         $cipher = SecretCipher::fromAppKey($environment->string('APP_KEY'));
         $store = AiSettingsStore::ephemeral($dbConfig, $cipher, [
             'enabled' => true,
-            'provider' => 'openai',
+            'provider' => $provider,
             'model' => 'gpt-4o-mini',
             'context_window' => $contextWindow,
         ], [
