@@ -43,7 +43,7 @@
 | **可审计可回放** | 命令批准/拒绝写入操作日志；每次 exec 录像 + 现场 transcript，刷新可恢复 |
 | **工具链透明** | 消息 timeline 与工具卡片交错展示，每次 `list_hosts` / `run_ssh_command` 可展开查看 |
 | **Web 面板配置 AI** | 侧边栏 **AI 设置**：多套 Provider 配置、启用开关、模型列表拉取、连接测试，密钥加密存 SQLite |
-| **上下文与缓存用量** | 对话底部实时显示上下文占用、prompt 缓存 token 与命中率（见 [聊天底部用量条](#ai-token-usage)） |
+| **上下文与缓存用量** | 对话底部实时显示当前上下文占用、本轮缓存与本 session 累计消耗（见 [聊天底部用量条](#ai-token-usage)） |
 
 **典型用法**
 
@@ -617,16 +617,17 @@ OpenAI、Deepseek、Anthropic、Gemini、Ollama、Mistral、Cohere、Grok、ZAI�
 
 | 指标 | 示例 | 说明 |
 |---|---|---|
-| **上下文占用** | `12.4k / 50k · 25%` | 当前对话估算 token 数 / 配置的**上下文窗口**上限；占用率 ≥ 80% 时高亮警告。接近上限时会触发历史裁剪或对话总结（见 [高级选项](#ai-config) 中的上下文窗口与总结阈值） |
-| **缓存 token** | `缓存 8.2k` | 仅当 Provider 回报 prompt 缓存命中时显示；无缓存数据时不出现此行 |
-| **命中率** | `命中率 91%` | **最近一次** LLM API 调用的 prompt 缓存命中率，与上下文占用率区分标注，避免歧义 |
+| **上下文占用** | `上下文 已用 12.4k · 上限 50k · 占用率 25%` | 当前对话估算 token 数 / 配置的**上下文窗口**上限；占用率 ≥ 80% 时高亮警告。接近上限时会触发历史裁剪或对话总结（见 [高级选项](#ai-config) 中的上下文窗口与总结阈值） |
+| **本轮缓存** | `本轮 缓存命中 8.2k · 缓存命中率 91%` | **最近一次** LLM API 调用的 prompt 缓存 token 与缓存命中率 |
+| **累计消耗** | `累计 总消耗 49.6k · 入命中 31.0k · 入未命中 11.2k · 输出 7.5k · 缓存命中率 74%` | 本 session **全部推理轮次**的计费 token 合计，口径与 Provider 后台账单一致（入命中 + 入未命中 + 输出） |
 
-**命中率计算（按 Provider 口径）：**
+**缓存命中率计算（按 Provider 口径）：**
 
-| Provider 类型 | 公式 |
-|---|---|
-| OpenAI 系（OpenAI、DeepSeek、ZAI/GLM、`openailike` 等） | `cached ÷ input × 100`（cached 已含在 input 内） |
-| Anthropic | `cached ÷ (input + cached) × 100`（两者分开统计） |
+| 范围 | Provider 类型 | 公式 |
+|---|---|---|
+| 本轮 | OpenAI 系（OpenAI、DeepSeek、ZAI/GLM、`openailike` 等） | `cached ÷ input × 100`（cached 已含在 input 内） |
+| 本轮 | Anthropic | `cached ÷ (input + cached) × 100`（两者分开统计） |
+| 累计 | 全部 Provider | `入命中 ÷ (入命中 + 入未命中) × 100`；OpenAI 系未命中 = `input − cached`，Anthropic 未命中 = `input` |
 
 **何时刷新：**
 

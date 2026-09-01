@@ -3714,11 +3714,31 @@ const appOptions = {
                             :class="{ 'ai-token-usage-warning': tokenUsage.context_percent >= 80 }"
                         >
                             <div class="ai-token-usage-row">
-                                <span>{{ formatTokenCount(tokenUsage.context_used) }} / {{ formatTokenCount(tokenUsage.context_window) }}</span>
-                                <span class="ai-token-percent">{{ tokenUsage.context_percent }}%</span>
-                                <span v-if="tokenUsage.cached_input_tokens > 0" class="ai-token-cache">缓存 {{ formatTokenCount(tokenUsage.cached_input_tokens) }} · 命中率 {{ tokenUsage.cache_hit_percent }}%</span>
+                                <span class="ai-token-section">上下文</span>
+                                <span class="ai-token-metric">已用 {{ formatTokenCount(tokenUsage.context_used) }}</span>
+                                <span class="ai-token-metric">上限 {{ formatTokenCount(tokenUsage.context_window) }}</span>
+                                <span class="ai-token-metric ai-token-percent">占用率 {{ tokenUsage.context_percent }}%</span>
                             </div>
-                            <div class="ai-token-bar"><div :style="{ width: tokenUsage.context_percent + '%' }"></div></div>
+                            <div v-if="tokenUsage.cached_input_tokens > 0" class="ai-token-usage-row">
+                                <span class="ai-token-section">本轮</span>
+                                <span class="ai-token-metric ai-token-cache">缓存命中 {{ formatTokenCount(tokenUsage.cached_input_tokens) }}</span>
+                                <span class="ai-token-metric ai-token-cache">缓存命中率 {{ tokenUsage.cache_hit_percent }}%</span>
+                            </div>
+                            <div class="ai-token-bar" title="上下文占用率"><div :style="{ width: tokenUsage.context_percent + '%' }"></div></div>
+                            <div v-if="tokenUsage.session_total_tokens > 0" class="ai-token-usage-row ai-token-session">
+                                <span class="ai-token-section">累计</span>
+                                <span class="ai-token-metric">总消耗 {{ formatTokenCount(tokenUsage.session_total_tokens) }}</span>
+                                <template v-if="tokenUsage.session_cached_input_tokens > 0">
+                                    <span class="ai-token-metric ai-token-cache">入命中 {{ formatTokenCount(tokenUsage.session_cached_input_tokens) }}</span>
+                                    <span class="ai-token-metric ai-token-cache">入未命中 {{ formatTokenCount(tokenUsage.session_uncached_input_tokens) }}</span>
+                                    <span class="ai-token-metric ai-token-cache">输出 {{ formatTokenCount(tokenUsage.session_output_tokens) }}</span>
+                                    <span class="ai-token-metric ai-token-cache">缓存命中率 {{ tokenUsage.session_cache_hit_percent }}%</span>
+                                </template>
+                                <template v-else>
+                                    <span class="ai-token-metric ai-token-session-detail">输入 {{ formatTokenCount(tokenUsage.session_uncached_input_tokens) }}</span>
+                                    <span class="ai-token-metric ai-token-session-detail">输出 {{ formatTokenCount(tokenUsage.session_output_tokens) }}</span>
+                                </template>
+                            </div>
                         </div>
                         <div v-if="approval" class="ai-approval">
                             <h4>待审核命令</h4>
