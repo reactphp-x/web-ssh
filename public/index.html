@@ -1407,6 +1407,51 @@
             padding: 12px;
         }
 
+
+        .ai-token-usage {
+            flex-shrink: 0;
+            padding: 6px 12px 4px;
+            border-bottom: 1px solid #232733;
+            font-size: 11px;
+            color: #9aa4b2;
+        }
+
+        .ai-token-usage-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+
+        .ai-token-percent {
+            color: #c5cad3;
+        }
+
+        .ai-token-cache {
+            color: #6eb88f;
+        }
+
+        .ai-token-usage-warning .ai-token-percent {
+            color: #e6b35a;
+        }
+
+        .ai-token-bar {
+            height: 3px;
+            border-radius: 2px;
+            background: #2a2f3a;
+            overflow: hidden;
+        }
+
+        .ai-token-bar > div {
+            height: 100%;
+            background: #5b8def;
+            transition: width 0.2s ease;
+        }
+
+        .ai-token-usage-warning .ai-token-bar > div {
+            background: #e6b35a;
+        }
+
         .ai-chat-footer {
             flex-shrink: 0;
             display: flex;

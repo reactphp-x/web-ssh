@@ -68,6 +68,7 @@ final class ChatService
             'feedback' => $feedback,
             'generation' => $generation,
             'command_auto_approve' => $this->approvalTrust->isEnabled($connId),
+            'token_usage' => ChatTokenUsage::summarize($this->fileHistory($connId), $this->settings),
         ];
     }
 
@@ -623,6 +624,7 @@ final class ChatService
             'thread_key' => $connId,
             'approval' => $approval,
             'feedback' => $feedback,
+            'token_usage' => ChatTokenUsage::summarize($this->fileHistory($connId), $this->settings),
         ];
     }
 

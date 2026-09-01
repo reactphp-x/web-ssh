@@ -2600,6 +2600,16 @@ const appOptions = {
                 const threadReady = computed(() => isSessionMode.value ? !!props.aiSessionId : !!props.connId);
                 const toolCallsOpen = ref(false);
                 const toolCalls = ref([]);
+                const tokenUsage = ref(null);
+
+                const formatTokenCount = (value) => {
+                    const n = Number(value) || 0;
+                    if (n >= 1000) {
+                        const scaled = n / 1000;
+                        return (scaled >= 10 ? Math.round(scaled) : scaled.toFixed(1).replace(/\.0$/, '')) + 'k';
+                    }
+                    return String(n);
+                };
 
                 const normalizeToolCalls = (items) => (items || []).map((item, idx) => ({
                     key: item.callId || `${item.name || 'tool'}-${idx}`,
@@ -3052,6 +3062,7 @@ const appOptions = {
                         approval.value = json.data?.approval || null;
                         feedback.value = json.data?.feedback || null;
                         commandAutoApprove.value = !!json.data?.command_auto_approve;
+                        tokenUsage.value = json.data?.token_usage ?? null;
                         if (!approval.value) {
                             approvalAutoApprove.value = false;
                         }
@@ -3206,6 +3217,9 @@ const appOptions = {
                     }
                     if (event === 'done') {
                         finalizeAssistant(data);
+                        if (data.token_usage) {
+                            tokenUsage.value = data.token_usage;
+                        }
                         scrollToBottom();
                     }
                     if (event === 'error') {
@@ -3555,6 +3569,8 @@ const appOptions = {
                     toggleFeedbackCheckbox,
                     feedbackOptionLetter,
                     errorText,
+                    tokenUsage,
+                    formatTokenCount,
                     logRef,
                     chatBodyRef,
                     composerRef,
@@ -3635,6 +3651,18 @@ const appOptions = {
                         </div>
                     </div>
                     <div class="ai-chat-footer">
+                        <div
+                            v-if="configured && tokenUsage"
+                            class="ai-token-usage"
+                            :class="{ 'ai-token-usage-warning': tokenUsage.context_percent >= 80 }"
+                        >
+                            <div class="ai-token-usage-row">
+                                <span>{{ formatTokenCount(tokenUsage.context_used) }} / {{ formatTokenCount(tokenUsage.context_window) }}</span>
+                                <span class="ai-token-percent">{{ tokenUsage.context_percent }}%</span>
+                                <span v-if="tokenUsage.cached_input_tokens > 0" class="ai-token-cache">缓存 {{ formatTokenCount(tokenUsage.cached_input_tokens) }}</span>
+                            </div>
+                            <div class="ai-token-bar"><div :style="{ width: tokenUsage.context_percent + '%' }"></div></div>
+                        </div>
                         <div v-if="approval" class="ai-approval">
                             <h4>待审核命令</h4>
                             <div class="ai-approval-list">

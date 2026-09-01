@@ -86,6 +86,7 @@ final class AiSessionChatService
             'feedback' => $feedback,
             'generation' => $generation,
             'command_auto_approve' => $this->approvalTrust->isEnabled($key),
+            'token_usage' => ChatTokenUsage::summarize($this->fileHistory($aiSessionId), $this->settings),
             'urls' => [
                 'stream' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream',
                 'subscribe' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream/subscribe',
@@ -802,6 +803,7 @@ final class AiSessionChatService
             'ai_session_id' => $aiSessionId,
             'approval' => $approval,
             'feedback' => $feedback,
+            'token_usage' => ChatTokenUsage::summarize($this->fileHistory($aiSessionId), $this->settings),
         ];
     }
 

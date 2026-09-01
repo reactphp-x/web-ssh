@@ -161,4 +161,9 @@ final class ChatFileHistory extends FileChatHistory
     {
         return str_starts_with(trim((string) $message->getContent()), self::SUMMARY_PREFIX);
     }
+
+    public function storageFilePath(): string
+    {
+        return $this->getFilePath();
+    }
 }
