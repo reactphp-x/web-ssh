@@ -43,6 +43,7 @@
 | **可审计可回放** | 命令批准/拒绝写入操作日志；每次 exec 录像 + 现场 transcript，刷新可恢复 |
 | **工具链透明** | 消息 timeline 与工具卡片交错展示，每次 `list_hosts` / `run_ssh_command` 可展开查看 |
 | **Web 面板配置 AI** | 侧边栏 **AI 设置**：多套 Provider 配置、启用开关、模型列表拉取、连接测试，密钥加密存 SQLite |
+| **上下文与缓存用量** | 对话底部实时显示上下文占用、prompt 缓存 token 与命中率（见 [聊天底部用量条](#ai-token-usage)） |
 
 **典型用法**
 
@@ -607,6 +608,33 @@ OpenAI、Deepseek、Anthropic、Gemini、Ollama、Mistral、Cohere、Grok、ZAI�
 
 - **默认命令超时**：AI 未指定 `timeout_sec` 时使用（默认 30 秒）
 - **命令超时上限**：AI 通过 `run_ssh_command` 的 `timeout_sec` 可请求的最大值（默认 300 秒）；超过上限会自动截断
+
+<a id="ai-token-usage"></a>
+
+### 聊天底部用量条
+
+**AI 助手**（终端页侧栏）与 **AI 编排**（`#/ai/session/{id}`）对话区底部均显示上下文与 prompt 缓存用量（需已启用 AI 并完成 bootstrap 加载）。
+
+| 指标 | 示例 | 说明 |
+|---|---|---|
+| **上下文占用** | `12.4k / 50k · 25%` | 当前对话估算 token 数 / 配置的**上下文窗口**上限；占用率 ≥ 80% 时高亮警告。接近上限时会触发历史裁剪或对话总结（见 [高级选项](#ai-config) 中的上下文窗口与总结阈值） |
+| **缓存 token** | `缓存 8.2k` | 仅当 Provider 回报 prompt 缓存命中时显示；无缓存数据时不出现此行 |
+| **命中率** | `命中率 91%` | **最近一次** LLM API 调用的 prompt 缓存命中率，与上下文占用率区分标注，避免歧义 |
+
+**命中率计算（按 Provider 口径）：**
+
+| Provider 类型 | 公式 |
+|---|---|
+| OpenAI 系（OpenAI、DeepSeek、ZAI/GLM、`openailike` 等） | `cached ÷ input × 100`（cached 已含在 input 内） |
+| Anthropic | `cached ÷ (input + cached) × 100`（两者分开统计） |
+
+**何时刷新：**
+
+- 打开或切换对话时（bootstrap 的 `token_usage`）
+- 多步 tool 循环中，每次 LLM 推理完成（决定调用工具）时，经 SSE **`usage`** 事件即时更新
+- 最终文本回复、或弹出命令审批 / 用户反馈时，经 **`done`** 事件再次更新
+
+页面刷新重连 SSE 时会回放已存储的 `usage` 事件，用量条与断线前保持一致。
 
 ### 存储与安全
 
