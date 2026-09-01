@@ -397,6 +397,13 @@ final class AiSessionChatService
                         $assembled .= (string) ($mapped['data']['text'] ?? '');
                     }
                     $emit($mapped['event'], $mapped['data']);
+                    ChatTokenUsage::emitIfInferenceFinished(
+                        $this->fileHistory($aiSessionId),
+                        $this->settings,
+                        $emit,
+                        $mapped['event'],
+                        $mapped['data'],
+                    );
                 }
                 $content = trim($assembled);
                 try {
@@ -502,6 +509,7 @@ final class AiSessionChatService
             $feedback = $this->serializeFeedbackRequest($request, $interrupt->getWorkflowId());
             $content = $this->interruptContent(trim($partialContent), $this->feedbackHint($feedback));
             if ($emit) {
+                ChatTokenUsage::emit($this->fileHistory($aiSessionId), $this->settings, $emit);
                 $emit('feedback', $feedback);
             }
 
@@ -519,6 +527,7 @@ final class AiSessionChatService
         $approval = $this->serializeApprovalRequest($request, $interrupt->getWorkflowId());
         $content = $this->interruptContent(trim($partialContent), $this->approvalHint($approval));
         if ($emit) {
+            ChatTokenUsage::emit($this->fileHistory($aiSessionId), $this->settings, $emit);
             $emit('approval', $approval);
         }
 

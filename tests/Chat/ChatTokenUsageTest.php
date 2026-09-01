@@ -103,6 +103,35 @@ final class ChatTokenUsageTest extends TestCase
         }
     }
 
+
+    public function testEmitIfInferenceFinishedOnlyOnToolCallPhase(): void
+    {
+        $dir = $this->tempDir();
+        $events = [];
+        $emit = static function (string $event, array $data) use (&$events): void {
+            $events[] = [$event, $data];
+        };
+
+        try {
+            $history = new ChatFileHistory($dir, 'emit', 10000);
+            $assistant = new AssistantMessage('tool');
+            $assistant->setUsage(new Usage(1000, 50));
+            $history->addMessage(new UserMessage('hello'));
+            $history->addMessage($assistant);
+            $settings = $this->settings(10000);
+
+            ChatTokenUsage::emitIfInferenceFinished($history, $settings, $emit, 'tool', ['phase' => 'result']);
+            self::assertSame([], $events);
+
+            ChatTokenUsage::emitIfInferenceFinished($history, $settings, $emit, 'tool', ['phase' => 'call']);
+            self::assertCount(1, $events);
+            self::assertSame('usage', $events[0][0]);
+            self::assertSame(1050, $events[0][1]['context_used']);
+        } finally {
+            $this->cleanup($dir, 'emit');
+        }
+    }
+
     private function settings(int $contextWindow): ChatSettings
     {
         $root = dirname(__DIR__, 2);

@@ -50,6 +50,33 @@ final class ChatTokenUsage
         ];
     }
 
+
+    /**
+     * @param callable(string, array<string, mixed>): void $emit
+     */
+    public static function emit(ChatFileHistory $history, ChatSettings $settings, callable $emit): void
+    {
+        $emit('usage', self::summarize($history, $settings));
+    }
+
+    /**
+     * Push usage after each completed LLM inference (tool-call decision).
+     *
+     * @param callable(string, array<string, mixed>): void $emit
+     * @param array<string, mixed> $data
+     */
+    public static function emitIfInferenceFinished(
+        ChatFileHistory $history,
+        ChatSettings $settings,
+        callable $emit,
+        string $event,
+        array $data,
+    ): void {
+        if ($event === 'tool' && ($data['phase'] ?? '') === 'call') {
+            self::emit($history, $settings, $emit);
+        }
+    }
+
     /**
      * @param list<Message> $messages
      */

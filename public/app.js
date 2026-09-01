@@ -3202,6 +3202,9 @@ const appOptions = {
                         busyText.value = '工具: ' + (data.label || data.name || '') + ' (' + (data.phase === 'call' ? '调用' : '完成') + ')';
                         scrollToBottom();
                     }
+                    if (event === 'usage') {
+                        tokenUsage.value = data;
+                    }
                     if (event === 'approval') {
                         if (!subscribeReplayState || subscribeReplayState.hadPendingApproval) {
                             approval.value = data;
