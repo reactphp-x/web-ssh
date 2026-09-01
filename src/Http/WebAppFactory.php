@@ -40,6 +40,7 @@ use App\Chat\AiSettingsStore;
 use App\Chat\ChatService;
 use App\Chat\ChatSettings;
 use App\Chat\ChatStreamSession;
+use App\Chat\CommandApprovalTrust;
 use App\Chat\StoppedTurnWriter;
 use App\Chat\StreamChunkMapper;
 use App\Chat\ThreadLock;
@@ -153,12 +154,14 @@ final class WebAppFactory
         $aiSettings = new AiSettingsController($aiSettingsService, $audit);
         $chatStreamSession = new ChatStreamSession($redisPool);
         $stoppedTurnWriter = new StoppedTurnWriter();
+        $commandApprovalTrust = new CommandApprovalTrust($redisPool);
         $chatService = new ChatService(
             $chatSettings,
             $sessionBridge,
             new ReactHttpClient(timeout: $chatSettings->httpTimeout()),
             new StreamChunkMapper(),
             $chatStreamSession,
+            $commandApprovalTrust,
             $logger,
         );
         $aiChat = new AiChatController(
@@ -180,6 +183,7 @@ final class WebAppFactory
             new StreamChunkMapper(),
             $chatStreamSession,
             $stoppedTurnWriter,
+            $commandApprovalTrust,
             $logger,
         );
         $aiSessions = new AiSessionController(
@@ -270,6 +274,7 @@ final class WebAppFactory
         $app->get('/api/ai/bootstrap', static fn (ServerRequestInterface $request) => $aiChat->bootstrap($request));
         $app->post('/api/ai/chat/stream', static fn (ServerRequestInterface $request) => $aiChat->stream($request));
         $app->post('/api/ai/chat/approval/stream', static fn (ServerRequestInterface $request) => $aiChat->approvalStream($request));
+        $app->post('/api/ai/chat/auto-approve', static fn (ServerRequestInterface $request) => $aiChat->disableAutoApprove($request));
         $app->post('/api/ai/chat/feedback/stream', static fn (ServerRequestInterface $request) => $aiChat->feedbackStream($request));
         $app->post('/api/ai/chat/stop', static fn (ServerRequestInterface $request) => $aiChat->stop($request));
         $app->post('/api/ai/chat/reset', static fn (ServerRequestInterface $request) => $aiChat->reset($request));
@@ -281,6 +286,7 @@ final class WebAppFactory
         $app->post('/api/ai/sessions/{id:\d+}/chat/stream', static fn (ServerRequestInterface $request) => $aiSessions->stream($request));
         $app->post('/api/ai/sessions/{id:\d+}/chat/stream/subscribe', static fn (ServerRequestInterface $request) => $aiSessions->subscribeStream($request));
         $app->post('/api/ai/sessions/{id:\d+}/approval/stream', static fn (ServerRequestInterface $request) => $aiSessions->approvalStream($request));
+        $app->post('/api/ai/sessions/{id:\d+}/auto-approve', static fn (ServerRequestInterface $request) => $aiSessions->disableAutoApprove($request));
         $app->post('/api/ai/sessions/{id:\d+}/feedback/stream', static fn (ServerRequestInterface $request) => $aiSessions->feedbackStream($request));
         $app->post('/api/ai/sessions/{id:\d+}/stop', static fn (ServerRequestInterface $request) => $aiSessions->stop($request));
         $app->post('/api/ai/sessions/{id:\d+}/reset', static fn (ServerRequestInterface $request) => $aiSessions->reset($request));

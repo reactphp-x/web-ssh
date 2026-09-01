@@ -254,11 +254,15 @@ const formatToolPresentation = (item, hostMap = null) => {
             const hostId = inputs.host_id ?? parsed?.host_id;
             const command = inputs.command || parsed?.command || '';
             const reason = inputs.reason || parsed?.reason || '';
+            const timeoutSec = inputs.timeout_sec ?? parsed?.timeout_sec;
             if (hostId) {
                 blocks.push({ kind: 'text', title: '目标主机', content: formatHostRef(hostId, hostMap) });
             }
             if (reason) {
                 blocks.push({ kind: 'text', title: '说明', content: reason });
+            }
+            if (timeoutSec != null && timeoutSec !== '') {
+                blocks.push({ kind: 'text', title: '超时', content: `${timeoutSec} 秒` });
             }
             if (command) {
                 blocks.push({ kind: 'code', title: '命令', content: command });
@@ -2577,6 +2581,7 @@ const appOptions = {
                             stream: base + '/chat/stream',
                             subscribe: base + '/chat/stream/subscribe',
                             approval: base + '/approval/stream',
+                            autoApprove: base + '/auto-approve',
                             feedback: base + '/feedback/stream',
                             stop: base + '/stop',
                             reset: base + '/reset',
@@ -2586,6 +2591,7 @@ const appOptions = {
                         bootstrap: '/api/ai/bootstrap?conn_id=' + encodeURIComponent(props.connId),
                         stream: '/api/ai/chat/stream',
                         approval: '/api/ai/chat/approval/stream',
+                        autoApprove: '/api/ai/chat/auto-approve',
                         feedback: '/api/ai/chat/feedback/stream',
                         stop: '/api/ai/chat/stop',
                         reset: '/api/ai/chat/reset',
@@ -2650,6 +2656,8 @@ const appOptions = {
                     toolCallsOpen.value = false;
                     approval.value = null;
                     feedback.value = null;
+                    approvalAutoApprove.value = false;
+                    commandAutoApprove.value = false;
                     resetFeedbackForm();
                     errorText.value = '';
                     generationActive.value = false;
@@ -2789,6 +2797,8 @@ const appOptions = {
                 const configured = ref(false);
                 const enabled = ref(true);
                 const approval = ref(null);
+                const approvalAutoApprove = ref(false);
+                const commandAutoApprove = ref(false);
                 const feedback = ref(null);
                 const feedbackAnswers = ref({});
                 const feedbackOtherTexts = ref({});
@@ -3041,6 +3051,10 @@ const appOptions = {
                         }
                         approval.value = json.data?.approval || null;
                         feedback.value = json.data?.feedback || null;
+                        commandAutoApprove.value = !!json.data?.command_auto_approve;
+                        if (!approval.value) {
+                            approvalAutoApprove.value = false;
+                        }
                         resetFeedbackForm();
                         errorText.value = '';
 
@@ -3347,19 +3361,53 @@ const appOptions = {
 
                 const submitApproval = async (approved) => {
                     if (!threadReady.value || busy.value) return;
+                    const autoApprove = approved && approvalAutoApprove.value;
                     messages.value.push({
                         kind: 'message',
                         role: 'user',
-                        content: approved ? '批准' : '拒绝',
-                        html: approved ? '批准' : '拒绝',
+                        content: approved
+                            ? (autoApprove ? '批准（本会话自动批准已开启）' : '批准')
+                            : '拒绝',
+                        html: approved
+                            ? (autoApprove ? '批准（本会话自动批准已开启）' : '批准')
+                            : '拒绝',
                         streaming: false,
                     });
+                    if (approved && autoApprove) {
+                        commandAutoApprove.value = true;
+                    }
                     approval.value = null;
+                    approvalAutoApprove.value = false;
                     await scrollToBottom();
                     const body = isSessionMode.value
-                        ? { approved: approved ? 1 : 0 }
-                        : { conn_id: props.connId, approved: approved ? 1 : 0 };
+                        ? { approved: approved ? 1 : 0, auto_approve: autoApprove ? 1 : 0 }
+                        : { conn_id: props.connId, approved: approved ? 1 : 0, auto_approve: autoApprove ? 1 : 0 };
                     await runStream(chatApi.value.approval, body);
+                };
+
+                const disableCommandAutoApprove = async () => {
+                    if (!threadReady.value || busy.value) return;
+                    try {
+                        const body = isSessionMode.value
+                            ? {}
+                            : { conn_id: props.connId };
+                        const res = await fetch(chatApi.value.autoApprove, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body),
+                        });
+                        const json = await res.json();
+                        if (json.code !== 0) {
+                            errorText.value = json.msg || '关闭自动批准失败';
+                            return;
+                        }
+                        commandAutoApprove.value = false;
+                        approvalAutoApprove.value = false;
+                        errorText.value = '';
+                    } catch (e) {
+                        errorText.value = e.message || '关闭自动批准失败';
+                    }
                 };
 
                 const submitFeedback = async () => {
@@ -3439,6 +3487,8 @@ const appOptions = {
                     toolCallsOpen.value = false;
                     approval.value = null;
                     feedback.value = null;
+                    approvalAutoApprove.value = false;
+                    commandAutoApprove.value = false;
                     resetFeedbackForm();
                     errorText.value = '';
                     await bootstrap({ skipGenerationResume: true });
@@ -3461,6 +3511,8 @@ const appOptions = {
                     toolCallsOpen.value = false;
                     approval.value = null;
                     feedback.value = null;
+                    approvalAutoApprove.value = false;
+                    commandAutoApprove.value = false;
                     resetFeedbackForm();
                     bootstrap();
                 }, { immediate: true });
@@ -3494,6 +3546,8 @@ const appOptions = {
                     configured,
                     enabled,
                     approval,
+                    approvalAutoApprove,
+                    commandAutoApprove,
                     feedback,
                     feedbackAnswers,
                     feedbackOtherTexts,
@@ -3509,6 +3563,7 @@ const appOptions = {
                     sendMessage,
                     onComposerKeydown,
                     submitApproval,
+                    disableCommandAutoApprove,
                     submitFeedback,
                     skipFeedback,
                     composerDisabled,
@@ -3596,9 +3651,17 @@ const appOptions = {
                                 </div>
                             </div>
                             <div class="actions">
+                                <label class="ai-approval-auto">
+                                    <input type="checkbox" v-model="approvalAutoApprove">
+                                    <span>本会话后续命令自动批准</span>
+                                </label>
                                 <button type="button" @click="submitApproval(false)" :disabled="busy">拒绝</button>
                                 <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
                             </div>
+                        </div>
+                        <div v-else-if="commandAutoApprove" class="ai-auto-approve-banner">
+                            <span>本会话后续 SSH 命令将自动批准执行</span>
+                            <button type="button" @click="disableCommandAutoApprove" :disabled="busy">关闭</button>
                         </div>
                         <div v-if="feedback" class="ai-feedback">
                             <h4>{{ feedback.message || '请回答' }}</h4>
@@ -5797,6 +5860,7 @@ const appOptions = {
                     vertex_location: '',
                     http_timeout: 120,
                     command_timeout: 30,
+                    command_timeout_max: 300,
                     tool_max_runs: 30,
                     context_window: 50000,
                     summarization_enabled: true,
@@ -5837,6 +5901,7 @@ const appOptions = {
                         vertex_location: s.vertex_location || '',
                         http_timeout: s.http_timeout ?? 120,
                         command_timeout: s.command_timeout ?? 30,
+                        command_timeout_max: s.command_timeout_max ?? 300,
                         tool_max_runs: s.tool_max_runs ?? 30,
                         context_window: s.context_window ?? 50000,
                         summarization_enabled: !!s.summarization_enabled,
@@ -6170,7 +6235,8 @@ const appOptions = {
                                 <summary>高级选项</summary>
                                 <div class="form-grid" style="margin-top:12px">
                                     <div><label>HTTP 超时（秒）</label><input v-model.number="form.http_timeout" type="number" min="1" step="0.1"></div>
-                                    <div><label>命令超时（秒）</label><input v-model.number="form.command_timeout" type="number" min="5"></div>
+                                    <div><label>默认命令超时（秒）</label><input v-model.number="form.command_timeout" type="number" min="5"></div>
+                                    <div><label>命令超时上限（秒）</label><input v-model.number="form.command_timeout_max" type="number" min="5"></div>
                                     <div><label>工具调用上限</label><input v-model.number="form.tool_max_runs" type="number" min="1"></div>
                                     <div><label>上下文窗口（tokens）</label><input v-model.number="form.context_window" type="number" min="1000"></div>
                                     <div class="full"><label class="checkbox-label"><input type="checkbox" v-model="form.summarization_enabled"> 启用对话总结</label></div>

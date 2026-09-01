@@ -6,6 +6,8 @@ namespace App\Neuron\Agent\Tools;
 
 use App\Neuron\Tools\RunSshCommandRunner;
 use App\Neuron\Tools\ToolJson;
+use App\Ssh\CommandTimeoutResolver;
+use App\Ssh\SshToolContext;
 
 final class RunSshCommandExecutorHandler
 {
@@ -16,8 +18,14 @@ final class RunSshCommandExecutorHandler
     /**
      * @return string JSON-encoded tool result
      */
-    public function __invoke(string $command, string $reason): string
+    public function __invoke(string $command, string $reason, ?int $timeout_sec = null): string
     {
-        return ToolJson::encode(RunSshCommandRunner::run($this->connId, $command, $reason));
+        $timeoutSec = CommandTimeoutResolver::resolve(
+            $timeout_sec,
+            SshToolContext::commandTimeout(),
+            SshToolContext::commandTimeoutMax(),
+        );
+
+        return ToolJson::encode(RunSshCommandRunner::run($this->connId, $command, $reason, $timeoutSec));
     }
 }

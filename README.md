@@ -416,9 +416,9 @@ docker compose up --build
 1. 在底部输入框描述任务（如「查看磁盘使用并清理 /tmp」）
 2. AI 分析后可调用工具：
    - **`get_terminal_context`** — 读取终端最近输出（只读，**无需审核**）
-   - **`run_ssh_command`** — 提议 shell 命令（**必须审核**）
+   - **`run_ssh_command`** — 提议 shell 命令（**必须审核**）；可选 `timeout_sec` 指定超时秒数
    - **`ask_user`** — 需求不明确时弹出选项（单选/多选）
-3. 出现 **待审核命令** 时，在侧栏底部点击 **批准** 或 **拒绝**
+3. 出现 **待审核命令** 时，在侧栏底部点击 **批准** 或 **拒绝**；可勾选 **本会话后续命令自动批准**，此后同一会话内后续 `run_ssh_command` 将自动执行（重置对话或点「关闭」可恢复逐条审批）
 4. 批准后通过 **独立 SSH exec** 执行；输出回传 AI 继续推理（可多轮）
 5. 点击 **工具调用** 可展开查看每次工具的参数与返回（消息 timeline 与工具卡片交错展示）
 
@@ -440,7 +440,7 @@ POST /api/ai/chat/reset            { conn_id }
 ### 说明与限制
 
 - AI exec 每次为**新 shell 进程**，工作目录/环境可能与交互 PTY 不一致（例如在 PTY 里 `cd` 后，AI 仍可能从 home 执行）
-- 不支持交互式命令（vim、top、mysql 客户端等）；请在左侧 PTY 终端手动操作
+- AI exec 无 stdin，交互式命令（vim、top、mysql 客户端等）会挂起直至超时；请在左侧 PTY 终端手动操作
 - 仅 `run_ssh_command` 会触发待审核；只读工具自动执行
 
 <a id="ai-orchestration"></a>
@@ -515,7 +515,7 @@ flowchart LR
 
 1. 侧边栏进入 **AI 编排**，点击 **新建会话**（或从历史列表 **继续**）
 2. 在右侧输入任务，例如：「检查 web-01 和 web-02 的 nginx 是否在运行」
-3. AI 调用工具（见下表）；遇到 **`run_ssh_command`** 时在底部 **批准 / 拒绝**
+3. AI 调用工具（见下表）；遇到 **`run_ssh_command`** 时在底部 **批准 / 拒绝**；可勾选 **本会话后续命令自动批准** 跳过后续逐条审批（重置对话或关闭可恢复）
 4. 批准后 `SshExecBridge` 对该 `host_id` 建立（或复用）exec 连接并执行；输出写入左侧 **现场** 与 live log
 5. AI 根据输出继续推理，可切换主机执行下一条命令，直至任务完成
 6. 刷新 `#/ai/session/{id}` 后，**现场** 通过 SSE `replay` 事件或 transcript API 恢复；聊天 timeline 含工具卡片
@@ -528,7 +528,7 @@ flowchart LR
 |---|---|---|
 | **`list_hosts`** | 否 | 列出平台已保存主机（id、名称、地址），供 AI 选择目标 |
 | **`get_command_context`** | 否 | 读取本编排会话中，某主机上最近 AI 命令输出 |
-| **`run_ssh_command`** | **是** | 在指定 `host_id` 上执行一条 shell 命令；参数含 `command`、`reason` |
+| **`run_ssh_command`** | **是** | 在指定 `host_id` 上执行一条 shell 命令；参数含 `command`、`reason`、可选 `timeout_sec` |
 | **`ask_user`** | 否 | 需求不明确时向用户弹出选项（单选/多选） |
 
 > 编排模式下 **`run_ssh_command` 必须带 `host_id`**；终端 AI 则固定在当前 `conn_id` 对应主机上执行。
@@ -573,7 +573,7 @@ GET  /api/ai/sessions/{id}/recording               # 各 segment 录像 manifest
 
 - **无需 Web 终端**：编排 exec 由服务端直接 `openssh` 连接，不占用浏览器 WebSocket PTY
 - **每次 exec 是新 shell**：与终端 AI 相同，不要假设 `cd` 或 export 会跨命令保留；需要时用绝对路径或一条命令写完
-- **禁止交互式命令**：vim、top、mysql、ssh 等会被拒绝；TUI 请在 Web 终端 PTY 中手动操作
+- **交互式命令**：AI exec 无 stdin，vim、top、mysql 等 TUI 会挂起直至超时；请在 Web 终端 PTY 中手动操作
 - **主机须预先录入**：只能对 **主机管理** 中已配置的主机执行；AI 通过 `list_hosts` 获取列表
 - **单用户隔离**：会话按登录用户名隔离，只能访问自己的 `ai_session`
 
@@ -603,7 +603,10 @@ OpenAI、Deepseek、Anthropic、Gemini、Ollama、Mistral、Cohere、Grok、ZAI�
 
 ### 高级选项
 
-可在各配置中调整：HTTP 超时、命令超时、工具调用上限、上下文窗口、对话总结阈值等（原 `NEURON_CHAT_*` / `AI_COMMAND_TIMEOUT` 等能力）。
+可在各配置中调整：HTTP 超时、默认命令超时、命令超时上限、工具调用上限、上下文窗口、对话总结阈值等（原 `NEURON_CHAT_*` / `AI_COMMAND_TIMEOUT` / `AI_COMMAND_TIMEOUT_MAX` 等能力）。
+
+- **默认命令超时**：AI 未指定 `timeout_sec` 时使用（默认 30 秒）
+- **命令超时上限**：AI 通过 `run_ssh_command` 的 `timeout_sec` 可请求的最大值（默认 300 秒）；超过上限会自动截断
 
 ### 存储与安全
 

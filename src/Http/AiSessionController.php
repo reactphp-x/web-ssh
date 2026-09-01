@@ -165,6 +165,7 @@ final class AiSessionController
             $id = $this->routeSessionId($request);
             $input = $this->input($request);
             $approved = $this->bool($input['approved'] ?? false);
+            $autoApprove = $this->bool($input['auto_approve'] ?? $input['auto_approve_session'] ?? false);
             $feedback = trim((string) ($input['feedback'] ?? ''));
         } catch (ChatException $e) {
             return $this->fail($e->getMessage(), 400, $e->data);
@@ -173,7 +174,7 @@ final class AiSessionController
         $username = RequestAuth::username($request);
         $userLabel = $approved ? '批准' : '拒绝';
 
-        return $this->streamLocked($username, $id, $userLabel, function (callable $emit, ?HttpStreamScope $scope) use ($request, $username, $id, $approved, $feedback): array {
+        return $this->streamLocked($username, $id, $userLabel, function (callable $emit, ?HttpStreamScope $scope) use ($request, $username, $id, $approved, $autoApprove, $feedback): array {
             $result = $this->chat->resumeApproval(
                 $username,
                 $id,
@@ -181,6 +182,7 @@ final class AiSessionController
                 $feedback !== '' ? $feedback : null,
                 $emit,
                 $scope,
+                $approved && $autoApprove,
             );
             $this->audit->logAs(
                 $username,
@@ -190,6 +192,16 @@ final class AiSessionController
                 $id,
                 json_encode(['feedback' => $feedback], JSON_UNESCAPED_UNICODE) ?: null,
             );
+            if ($approved && $autoApprove) {
+                $this->audit->logAs(
+                    $username,
+                    RequestAuth::clientIp($request),
+                    'ai.session.command.auto_approve.enabled',
+                    'ai_session',
+                    $id,
+                    null,
+                );
+            }
 
             return $result;
         });
@@ -232,8 +244,9 @@ final class AiSessionController
         $username = RequestAuth::username($request);
         $lockKey = $this->chat->lockKey($username, $id);
         $this->streamSession->requestManualStop($lockKey);
+        $this->chat->disableCommandAutoApprove($id);
 
-        return $this->ok(['stopped' => true, 'thread_key' => (string) $id]);
+        return $this->ok(['stopped' => true, 'thread_key' => (string) $id, 'command_auto_approve' => false]);
     }
 
     public function subscribeStream(ServerRequestInterface $request): ResponseInterface
@@ -325,6 +338,26 @@ final class AiSessionController
 
             return $this->ok([
                 'thread_key' => $this->chat->reset($id),
+                'command_auto_approve' => false,
+            ]);
+        } catch (ChatException $e) {
+            return $this->fail($e->getMessage(), 400, $e->data);
+        }
+    }
+
+    public function disableAutoApprove(ServerRequestInterface $request): ResponseInterface
+    {
+        if ($denied = $this->deny()) {
+            return $denied;
+        }
+
+        try {
+            $id = $this->routeSessionId($request);
+            $this->chat->disableCommandAutoApprove($id);
+
+            return $this->ok([
+                'thread_key' => (string) $id,
+                'command_auto_approve' => false,
             ]);
         } catch (ChatException $e) {
             return $this->fail($e->getMessage(), 400, $e->data);

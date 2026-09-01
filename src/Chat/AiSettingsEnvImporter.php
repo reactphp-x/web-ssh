@@ -62,6 +62,7 @@ final class AiSettingsEnvImporter
                 'vertex_location' => trim($this->environment->string('NEURON_AI_VERTEX_LOCATION', '')),
                 'http_timeout' => $this->environment->float('NEURON_AI_HTTP_TIMEOUT', 120.0),
                 'command_timeout' => $this->environment->int('AI_COMMAND_TIMEOUT', 30),
+                'command_timeout_max' => $this->environment->int('AI_COMMAND_TIMEOUT_MAX', 300),
                 'tool_max_runs' => $this->environment->int('NEURON_AI_TOOL_MAX_RUNS', 30),
                 'context_window' => $this->environment->int('NEURON_CHAT_CONTEXT_WINDOW', 50000),
                 'summarization_enabled' => filter_var(

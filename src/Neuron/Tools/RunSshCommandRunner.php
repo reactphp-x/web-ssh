@@ -16,7 +16,7 @@ final class RunSshCommandRunner
     /**
      * @return array<string, mixed>
      */
-    public static function run(string $connId, string $command, string $reason): array
+    public static function run(string $connId, string $command, string $reason, int $timeoutSec): array
     {
         $command = trim($command);
         $reason = trim($reason);
@@ -31,13 +31,14 @@ final class RunSshCommandRunner
 
         try {
             /** @var PromiseInterface $promise */
-            $promise = $bridge->runCommand($connId, $command, SshToolContext::commandTimeout());
+            $promise = $bridge->runCommand($connId, $command, $timeoutSec);
             $result = await($promise);
         } catch (Throwable $e) {
             return [
                 'ok' => false,
                 'command' => $command,
                 'reason' => $reason,
+                'timeout_sec' => $timeoutSec,
                 'error' => $e->getMessage(),
             ];
         }
@@ -46,6 +47,7 @@ final class RunSshCommandRunner
             'ok' => true,
             'command' => $command,
             'reason' => $reason,
+            'timeout_sec' => $timeoutSec,
             'output' => $result->output,
             'exit_code' => $result->exitCode,
             'timed_out' => $result->timedOut,

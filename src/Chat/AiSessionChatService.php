@@ -42,6 +42,7 @@ final class AiSessionChatService
         private readonly StreamChunkMapper $chunks,
         private readonly ChatStreamSession $streamSession,
         private readonly StoppedTurnWriter $stoppedTurns,
+        private readonly CommandApprovalTrust $approvalTrust,
         private readonly LoggerInterface $logger,
     ) {
     }
@@ -84,6 +85,7 @@ final class AiSessionChatService
             'approval' => $approval,
             'feedback' => $feedback,
             'generation' => $generation,
+            'command_auto_approve' => $this->approvalTrust->isEnabled($key),
             'urls' => [
                 'stream' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream',
                 'subscribe' => '/api/ai/sessions/' . $aiSessionId . '/chat/stream/subscribe',
@@ -128,6 +130,7 @@ final class AiSessionChatService
         ?string $feedback = null,
         ?callable $emit = null,
         ?HttpStreamScope $scope = null,
+        bool $autoApproveSession = false,
     ): array {
         $token = $this->workflowResumeToken($aiSessionId);
         $request = $this->loadApprovalRequest($token);
@@ -146,7 +149,14 @@ final class AiSessionChatService
             }
         }
 
-        $userLabel = $approved ? '批准' : '拒绝';
+        $threadKey = $this->threadKey($aiSessionId);
+        if ($approved && $autoApproveSession) {
+            $this->approvalTrust->enable($threadKey);
+        }
+
+        $userLabel = $approved
+            ? ($autoApproveSession ? '批准（本会话自动批准已开启）' : '批准')
+            : '拒绝';
         if ($emit) {
             $emit('start', [
                 'thread_key' => $this->threadKey($aiSessionId),
@@ -235,6 +245,8 @@ final class AiSessionChatService
 
     public function reset(int $aiSessionId): string
     {
+        $this->approvalTrust->disable($this->threadKey($aiSessionId));
+
         $this->deleteChatArtifacts($aiSessionId);
         try {
             $this->workflowPersistence()->delete($this->workflowResumeToken($aiSessionId));
@@ -242,6 +254,16 @@ final class AiSessionChatService
         }
 
         return $this->threadKey($aiSessionId) . '-' . time();
+    }
+
+    public function disableCommandAutoApprove(int $aiSessionId): void
+    {
+        $this->approvalTrust->disable($this->threadKey($aiSessionId));
+    }
+
+    public function isCommandAutoApproveEnabled(int $aiSessionId): bool
+    {
+        return $this->approvalTrust->isEnabled($this->threadKey($aiSessionId));
     }
 
     private function deleteChatArtifacts(int $aiSessionId): void
@@ -791,6 +813,8 @@ final class AiSessionChatService
             $aiSessionId,
             $username,
             $this->settings->commandTimeout(),
+            $this->settings->commandTimeoutMax(),
+            $this->approvalTrust,
         );
 
         $http = $this->httpClient;
@@ -799,7 +823,16 @@ final class AiSessionChatService
         }
 
         $agent = OrchestratorAgent::make($this->workflowPersistence(), $this->workflowResumeToken($aiSessionId));
-        $agent->configure($this->settings, $http, $this->execBridge, $this->hosts, $aiSessionId, $username, true);
+        $agent->configure(
+            $this->settings,
+            $http,
+            $this->execBridge,
+            $this->hosts,
+            $aiSessionId,
+            $username,
+            $this->approvalTrust,
+            true,
+        );
         $agent->toolMaxRuns($this->settings->toolMaxRuns());
         $agent->setChatHistory($this->fileHistory($aiSessionId));
 

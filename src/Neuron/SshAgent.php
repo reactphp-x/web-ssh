@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Neuron;
 
 use App\Chat\ChatSettings;
+use App\Neuron\Agent\Middleware\ConditionalRunSshCommandApproval;
 use App\Neuron\Agent\Middleware\SshCommandApprovalPrep;
 use App\Neuron\Agent\ProvidesSummarizationMiddleware;
 use App\Neuron\Agent\Middleware\UserFeedback;
@@ -15,7 +16,6 @@ use App\Neuron\Tools\RunSshCommandTool;
 use App\Ssh\SshSessionBridge;
 use App\Ssh\SshToolContext;
 use NeuronAI\Agent\Agent;
-use NeuronAI\Agent\Middleware\ToolApproval;
 use NeuronAI\Agent\Nodes\ToolNode;
 use NeuronAI\Agent\SystemPrompt;
 use NeuronAI\HttpClient\HttpClientInterface;
@@ -65,6 +65,7 @@ final class SshAgent extends Agent
             '你只能通过 run_ssh_command 在远程 shell 执行命令，禁止假装已经执行。',
             'get_terminal_context 可读取终端最近输出，无需批准。',
             'run_ssh_command 会暂停等待用户在界面上批准或拒绝。',
+            'run_ssh_command 可通过 timeout_sec 为耗时命令（如构建、大文件处理）延长超时；未指定则用默认值，不得超过配置上限。',
         ];
         $steps = [
             '先理解用户目标；必要时用 get_terminal_context 查看当前终端状态。',
@@ -88,9 +89,7 @@ final class SshAgent extends Agent
     {
         $toolNode = [
             new SshCommandApprovalPrep(),
-            new ToolApproval([
-                RunSshCommandTool::class,
-            ]),
+            ConditionalRunSshCommandApproval::forSshAgent(),
         ];
         if ($this->allowFeedback) {
             $toolNode[] = new UserFeedback();

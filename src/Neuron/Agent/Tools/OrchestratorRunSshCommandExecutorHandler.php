@@ -6,6 +6,8 @@ namespace App\Neuron\Agent\Tools;
 
 use App\Neuron\Tools\OrchestratorRunSshCommandRunner;
 use App\Neuron\Tools\ToolJson;
+use App\Ssh\CommandTimeoutResolver;
+use App\Ssh\OrchestratorToolContext;
 
 final class OrchestratorRunSshCommandExecutorHandler
 {
@@ -16,13 +18,20 @@ final class OrchestratorRunSshCommandExecutorHandler
     /**
      * @return string JSON-encoded tool result
      */
-    public function __invoke(int $host_id, string $command, string $reason): string
+    public function __invoke(int $host_id, string $command, string $reason, ?int $timeout_sec = null): string
     {
+        $timeoutSec = CommandTimeoutResolver::resolve(
+            $timeout_sec,
+            OrchestratorToolContext::commandTimeout(),
+            OrchestratorToolContext::commandTimeoutMax(),
+        );
+
         return ToolJson::encode(OrchestratorRunSshCommandRunner::run(
             $this->aiSessionId,
             $host_id,
             $command,
             $reason,
+            $timeoutSec,
         ));
     }
 }

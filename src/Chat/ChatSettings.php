@@ -142,6 +142,14 @@ final class ChatSettings
         return max(5, $this->profileInt('command_timeout', AiSettingsDefaults::COMMAND_TIMEOUT));
     }
 
+    public function commandTimeoutMax(): int
+    {
+        return max($this->commandTimeout(), max(5, $this->profileInt(
+            'command_timeout_max',
+            AiSettingsDefaults::COMMAND_TIMEOUT_MAX,
+        )));
+    }
+
     public function toolMaxRuns(): int
     {
         return max(1, $this->profileInt('tool_max_runs', AiSettingsDefaults::TOOL_MAX_RUNS));

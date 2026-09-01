@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace App\Neuron\Agent\Middleware;
 
+use App\Neuron\Agent\Middleware\RunSshCommandInputNormalizer;
 use App\Neuron\Agent\Tools\OrchestratorRunSshCommandExecutorHandler;
 use App\Neuron\Agent\Tools\OrchestratorRunSshCommandPendingHandler;
 use App\Neuron\Tools\OrchestratorRunSshCommandTool;
+use App\Ssh\OrchestratorToolContext;
 use NeuronAI\Agent\Events\ToolCallEvent;
 use NeuronAI\Agent\Nodes\ToolNode;
 use NeuronAI\Workflow\Events\Event;
@@ -40,7 +42,16 @@ final class OrchestratorCommandApprovalPrep implements WorkflowMiddleware
             if ($tool->getName() !== OrchestratorRunSshCommandTool::NAME) {
                 continue;
             }
-            $tool->setCallable(new OrchestratorRunSshCommandPendingHandler());
+            RunSshCommandInputNormalizer::apply(
+                $tool,
+                OrchestratorToolContext::commandTimeout(),
+                OrchestratorToolContext::commandTimeoutMax(),
+            );
+            if (OrchestratorToolContext::commandApprovalRequired()) {
+                $tool->setCallable(new OrchestratorRunSshCommandPendingHandler());
+            } elseif ($tool instanceof OrchestratorRunSshCommandTool) {
+                $tool->setCallable(new OrchestratorRunSshCommandExecutorHandler($tool->getAiSessionId()));
+            }
         }
     }
 

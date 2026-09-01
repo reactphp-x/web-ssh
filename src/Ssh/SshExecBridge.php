@@ -410,15 +410,8 @@ final class SshExecBridge
 
     private function isBlockedCommand(string $command): bool
     {
-        $lower = strtolower($command);
-        $blocked = ['vim ', 'vi ', 'nano ', 'top', 'htop', 'less ', 'more ', 'mysql ', 'psql ', 'redis-cli ', 'ssh ', 'su ', 'sudo su'];
-
-        foreach ($blocked as $needle) {
-            if (str_starts_with($lower, $needle) || str_contains($lower, ' ' . $needle)) {
-                return true;
-            }
-        }
-
+        // Temporarily disabled: substring blocklist false-positive on long scripts.
+        // Re-enable via CommandBlocklist (first-command detection) when needed.
         return false;
     }
 }

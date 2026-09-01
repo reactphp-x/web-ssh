@@ -16,6 +16,8 @@ final class AiSettingsDefaults
 
     public const COMMAND_TIMEOUT = 30;
 
+    public const COMMAND_TIMEOUT_MAX = 300;
+
     public const TOOL_MAX_RUNS = 30;
 
     public const CONTEXT_WINDOW = 50000;
@@ -58,6 +60,7 @@ final class AiSettingsDefaults
             'vertex_location' => '',
             'http_timeout' => self::HTTP_TIMEOUT,
             'command_timeout' => self::COMMAND_TIMEOUT,
+            'command_timeout_max' => self::COMMAND_TIMEOUT_MAX,
             'tool_max_runs' => self::TOOL_MAX_RUNS,
             'context_window' => self::CONTEXT_WINDOW,
             'summarization_enabled' => self::SUMMARIZATION_ENABLED,

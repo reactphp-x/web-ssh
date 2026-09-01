@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Neuron;
 
 use App\Chat\ChatSettings;
+use App\Chat\CommandApprovalTrust;
+use App\Neuron\Agent\Middleware\ConditionalRunSshCommandApproval;
 use App\Neuron\Agent\Middleware\OrchestratorCommandApprovalPrep;
 use App\Neuron\Agent\ProvidesSummarizationMiddleware;
 use App\Neuron\Agent\Middleware\UserFeedback;
@@ -17,7 +19,6 @@ use App\Ssh\OrchestratorToolContext;
 use App\Ssh\SshExecBridge;
 use App\Repository\HostRepository;
 use NeuronAI\Agent\Agent;
-use NeuronAI\Agent\Middleware\ToolApproval;
 use NeuronAI\Agent\Nodes\ToolNode;
 use NeuronAI\Agent\SystemPrompt;
 use NeuronAI\HttpClient\HttpClientInterface;
@@ -42,6 +43,8 @@ final class OrchestratorAgent extends Agent
 
     private bool $allowFeedback = true;
 
+    private ?CommandApprovalTrust $approvalTrust = null;
+
     public function configure(
         ChatSettings $settings,
         HttpClientInterface $http,
@@ -49,6 +52,7 @@ final class OrchestratorAgent extends Agent
         HostRepository $hosts,
         int $aiSessionId,
         string $username,
+        CommandApprovalTrust $approvalTrust,
         bool $allowFeedback = true,
     ): self {
         $this->settings = $settings;
@@ -57,6 +61,7 @@ final class OrchestratorAgent extends Agent
         $this->hosts = $hosts;
         $this->aiSessionId = $aiSessionId;
         $this->username = $username;
+        $this->approvalTrust = $approvalTrust;
         $this->allowFeedback = $allowFeedback;
         $this->registerSummarizationMiddleware($settings);
 
@@ -73,6 +78,7 @@ final class OrchestratorAgent extends Agent
         $background = [
             '你是 Web SSH 平台的跨主机运维编排助手。用户未指定主机时，必须先调用 list_hosts 选择合适目标。',
             'run_ssh_command 需要 host_id、command、reason；写操作会暂停等待用户批准。',
+            'run_ssh_command 可通过 timeout_sec 为耗时命令延长超时；未指定则用默认值，不得超过配置上限。',
             'get_command_context 可读取某主机上最近 AI 命令输出，无需批准。',
             '切换主机时会开启新的 exec 分段；各主机 shell 环境相互独立（cwd/env 不共享）。',
         ];
@@ -98,9 +104,7 @@ final class OrchestratorAgent extends Agent
     {
         $toolNode = [
             new OrchestratorCommandApprovalPrep(),
-            new ToolApproval([
-                OrchestratorRunSshCommandTool::class,
-            ]),
+            ConditionalRunSshCommandApproval::forOrchestrator(),
         ];
         if ($this->allowFeedback) {
             $toolNode[] = new UserFeedback();
@@ -119,6 +123,8 @@ final class OrchestratorAgent extends Agent
             $this->aiSessionId,
             $this->username,
             $this->requireSettings()->commandTimeout(),
+            $this->requireSettings()->commandTimeoutMax(),
+            $this->requireApprovalTrust(),
         );
 
         $tools = [
@@ -158,5 +164,14 @@ final class OrchestratorAgent extends Agent
         }
 
         return $this->hosts;
+    }
+
+    private function requireApprovalTrust(): CommandApprovalTrust
+    {
+        if ($this->approvalTrust === null) {
+            throw new \RuntimeException('OrchestratorAgent requires CommandApprovalTrust.');
+        }
+
+        return $this->approvalTrust;
     }
 }

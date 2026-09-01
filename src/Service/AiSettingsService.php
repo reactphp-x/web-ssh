@@ -62,6 +62,7 @@ final class AiSettingsService
         'vertex_location',
         'http_timeout',
         'command_timeout',
+        'command_timeout_max',
         'tool_max_runs',
         'context_window',
         'summarization_enabled',
@@ -435,7 +436,7 @@ final class AiSettingsService
                 continue;
             }
 
-            if (in_array($field, ['anthropic_max_tokens', 'command_timeout', 'tool_max_runs', 'context_window', 'summarization_max_tokens', 'summarization_keep'], true)) {
+            if (in_array($field, ['anthropic_max_tokens', 'command_timeout', 'command_timeout_max', 'tool_max_runs', 'context_window', 'summarization_max_tokens', 'summarization_keep'], true)) {
                 $config[$field] = $value === '' || $value === null ? null : (int) $value;
                 continue;
             }
@@ -528,6 +529,12 @@ final class AiSettingsService
             if (trim((string) ($config['vertex_credentials'] ?? '')) === '' || trim((string) ($config['vertex_project'] ?? '')) === '') {
                 throw new InvalidArgumentException('Vertex AI 需要填写凭据路径与 Project ID。');
             }
+        }
+
+        $commandTimeout = max(5, (int) ($config['command_timeout'] ?? AiSettingsDefaults::COMMAND_TIMEOUT));
+        $commandTimeoutMax = max(5, (int) ($config['command_timeout_max'] ?? AiSettingsDefaults::COMMAND_TIMEOUT_MAX));
+        if ($commandTimeoutMax < $commandTimeout) {
+            throw new InvalidArgumentException('命令超时上限不能小于默认命令超时。');
         }
     }
 }

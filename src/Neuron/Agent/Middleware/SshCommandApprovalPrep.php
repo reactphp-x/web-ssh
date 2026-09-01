@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace App\Neuron\Agent\Middleware;
 
+use App\Neuron\Agent\Middleware\RunSshCommandInputNormalizer;
 use App\Neuron\Agent\Tools\RunSshCommandExecutorHandler;
 use App\Neuron\Agent\Tools\RunSshCommandPendingHandler;
 use App\Neuron\Tools\RunSshCommandTool;
+use App\Ssh\SshToolContext;
 use NeuronAI\Agent\Events\ToolCallEvent;
 use NeuronAI\Agent\Nodes\ToolNode;
 use NeuronAI\Tools\ToolInterface;
@@ -41,7 +43,16 @@ final class SshCommandApprovalPrep implements WorkflowMiddleware
             if ($tool->getName() !== RunSshCommandTool::NAME) {
                 continue;
             }
-            $tool->setCallable(new RunSshCommandPendingHandler());
+            RunSshCommandInputNormalizer::apply(
+                $tool,
+                SshToolContext::commandTimeout(),
+                SshToolContext::commandTimeoutMax(),
+            );
+            if (SshToolContext::commandApprovalRequired()) {
+                $tool->setCallable(new RunSshCommandPendingHandler());
+            } elseif ($tool instanceof RunSshCommandTool) {
+                $tool->setCallable(new RunSshCommandExecutorHandler($tool->getConnId()));
+            }
         }
     }
 

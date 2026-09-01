@@ -32,6 +32,7 @@ final class ChatService
         private readonly HttpClientInterface $httpClient,
         private readonly StreamChunkMapper $chunks,
         private readonly ChatStreamSession $streamSession,
+        private readonly CommandApprovalTrust $approvalTrust,
         private readonly LoggerInterface $logger,
     ) {
     }
@@ -66,6 +67,7 @@ final class ChatService
             'approval' => $approval,
             'feedback' => $feedback,
             'generation' => $generation,
+            'command_auto_approve' => $this->approvalTrust->isEnabled($connId),
         ];
     }
 
@@ -100,6 +102,7 @@ final class ChatService
         ?string $feedback = null,
         ?callable $emit = null,
         ?HttpStreamScope $scope = null,
+        bool $autoApproveSession = false,
     ): array {
         $token = $this->workflowResumeToken($connId);
         $request = $this->loadApprovalRequest($token);
@@ -118,7 +121,13 @@ final class ChatService
             }
         }
 
-        $userLabel = $approved ? '批准' : '拒绝';
+        if ($approved && $autoApproveSession) {
+            $this->approvalTrust->enable($connId);
+        }
+
+        $userLabel = $approved
+            ? ($autoApproveSession ? '批准（本会话自动批准已开启）' : '批准')
+            : '拒绝';
         if ($emit) {
             $emit('start', [
                 'thread_key' => $connId,
@@ -207,6 +216,8 @@ final class ChatService
 
     public function reset(string $connId): string
     {
+        $this->approvalTrust->disable($connId);
+
         $directory = $this->settings->storagePath();
         if (is_dir($directory)) {
             foreach (glob($directory . DIRECTORY_SEPARATOR . '*' . $connId . '*') ?: [] as $file) {
@@ -219,6 +230,16 @@ final class ChatService
         }
 
         return $connId . '-' . time();
+    }
+
+    public function disableCommandAutoApprove(string $threadKey): void
+    {
+        $this->approvalTrust->disable($threadKey);
+    }
+
+    public function isCommandAutoApproveEnabled(string $threadKey): bool
+    {
+        return $this->approvalTrust->isEnabled($threadKey);
     }
 
     /**
@@ -607,7 +628,13 @@ final class ChatService
 
     private function makeAgent(string $connId, ?HttpStreamScope $scope): SshAgent
     {
-        SshToolContext::configure($this->bridge, $this->settings->commandTimeout());
+        SshToolContext::configure(
+            $this->bridge,
+            $this->settings->commandTimeout(),
+            $this->settings->commandTimeoutMax(),
+            $connId,
+            $this->approvalTrust,
+        );
 
         $http = $this->httpClient;
         if ($scope !== null && $http instanceof ReactHttpClient) {

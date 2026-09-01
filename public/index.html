@@ -1588,13 +1588,46 @@
         }
 
         .ai-approval .actions {
-            flex-shrink: 0;
             display: flex;
+            flex-wrap: wrap;
+            align-items: center;
             gap: 8px;
+            flex-shrink: 0;
             justify-content: space-between;
             padding-top: 8px;
             border-top: 1px solid #2a2f3a;
             background: #151821;
+        }
+
+        .ai-approval-auto {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #b8c0cc;
+            margin-right: auto;
+            cursor: pointer;
+        }
+
+        .ai-approval-auto input {
+            margin: 0;
+        }
+
+        .ai-auto-approve-banner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 8px 12px;
+            border-bottom: 1px solid #2a2f3a;
+            background: #1a2332;
+            color: #9fd4ff;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+
+        .ai-auto-approve-banner button {
+            flex-shrink: 0;
         }
 
         .ai-field {
