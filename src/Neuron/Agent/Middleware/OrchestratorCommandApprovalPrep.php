@@ -4,10 +4,11 @@ declare(strict_types=1);
 
 namespace App\Neuron\Agent\Middleware;
 
-use App\Neuron\Agent\Middleware\RunSshCommandInputNormalizer;
 use App\Neuron\Agent\Tools\OrchestratorRunSshCommandExecutorHandler;
 use App\Neuron\Agent\Tools\OrchestratorRunSshCommandPendingHandler;
+use App\Neuron\Agent\Tools\ToolFeedbackResultHandler;
 use App\Neuron\Tools\OrchestratorRunSshCommandTool;
+use App\Neuron\Tools\ToolJson;
 use App\Ssh\OrchestratorToolContext;
 use NeuronAI\Agent\Events\ToolCallEvent;
 use NeuronAI\Agent\Nodes\ToolNode;
@@ -29,6 +30,7 @@ final class OrchestratorCommandApprovalPrep implements WorkflowMiddleware
         }
 
         if ($node->isResuming() && $node->getResumeRequest() instanceof ApprovalRequest) {
+            $this->normalizeOrchestratorRunSshCommands($event);
             $this->prepareApprovedExecutors($node->getResumeRequest(), $event);
 
             return;
@@ -38,15 +40,35 @@ final class OrchestratorCommandApprovalPrep implements WorkflowMiddleware
             return;
         }
 
+        $this->normalizeOrchestratorRunSshCommands($event);
+    }
+
+    private function normalizeOrchestratorRunSshCommands(ToolCallEvent $event): void
+    {
+        $activeHostId = OrchestratorToolContext::execBridge()->getActiveSegment(
+            OrchestratorToolContext::aiSessionId(),
+        )['host_id'] ?? null;
+
         foreach ($event->toolCallMessage->getTools() as $tool) {
             if ($tool->getName() !== OrchestratorRunSshCommandTool::NAME) {
                 continue;
             }
-            RunSshCommandInputNormalizer::apply(
+
+            $error = OrchestratorRunSshCommandInputNormalizer::apply(
                 $tool,
                 OrchestratorToolContext::commandTimeout(),
                 OrchestratorToolContext::commandTimeoutMax(),
+                is_int($activeHostId) ? $activeHostId : null,
             );
+            if ($error !== null) {
+                $tool->setCallable(new ToolFeedbackResultHandler(ToolJson::encode([
+                    'ok' => false,
+                    'error' => $error,
+                ])));
+
+                continue;
+            }
+
             if (OrchestratorToolContext::commandApprovalRequired()) {
                 $tool->setCallable(new OrchestratorRunSshCommandPendingHandler());
             } elseif ($tool instanceof OrchestratorRunSshCommandTool) {

@@ -78,6 +78,7 @@ final class OrchestratorAgent extends Agent
         $background = [
             '你是 Web SSH 平台的跨主机运维编排助手。用户未指定主机时，必须先调用 list_hosts 选择合适目标。',
             'run_ssh_command 需要 host_id、command、reason；写操作会暂停等待用户批准。',
+            '即使已在某台主机上执行过命令，每次 run_ssh_command 仍应传入 host_id（可沿用上一轮的 host_id 数值）。',
             'run_ssh_command 可通过 timeout_sec 为耗时命令延长超时；未指定则用默认值，不得超过配置上限。',
             'get_command_context 可读取某主机上最近 AI 命令输出，无需批准。',
             '切换主机时会开启新的 exec 分段；各主机 shell 环境相互独立（cwd/env 不共享）。',

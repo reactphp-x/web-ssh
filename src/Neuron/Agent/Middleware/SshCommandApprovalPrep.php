@@ -4,10 +4,11 @@ declare(strict_types=1);
 
 namespace App\Neuron\Agent\Middleware;
 
-use App\Neuron\Agent\Middleware\RunSshCommandInputNormalizer;
 use App\Neuron\Agent\Tools\RunSshCommandExecutorHandler;
 use App\Neuron\Agent\Tools\RunSshCommandPendingHandler;
+use App\Neuron\Agent\Tools\ToolFeedbackResultHandler;
 use App\Neuron\Tools\RunSshCommandTool;
+use App\Neuron\Tools\ToolJson;
 use App\Ssh\SshToolContext;
 use NeuronAI\Agent\Events\ToolCallEvent;
 use NeuronAI\Agent\Nodes\ToolNode;
@@ -30,6 +31,7 @@ final class SshCommandApprovalPrep implements WorkflowMiddleware
         }
 
         if ($node->isResuming() && $node->getResumeRequest() instanceof ApprovalRequest) {
+            $this->normalizeTerminalRunSshCommands($event);
             $this->prepareApprovedExecutors($node->getResumeRequest(), $event);
 
             return;
@@ -39,15 +41,30 @@ final class SshCommandApprovalPrep implements WorkflowMiddleware
             return;
         }
 
+        $this->normalizeTerminalRunSshCommands($event);
+    }
+
+    private function normalizeTerminalRunSshCommands(ToolCallEvent $event): void
+    {
         foreach ($event->toolCallMessage->getTools() as $tool) {
             if ($tool->getName() !== RunSshCommandTool::NAME) {
                 continue;
             }
-            RunSshCommandInputNormalizer::apply(
+
+            $error = RunSshCommandInputNormalizer::applyTerminal(
                 $tool,
                 SshToolContext::commandTimeout(),
                 SshToolContext::commandTimeoutMax(),
             );
+            if ($error !== null) {
+                $tool->setCallable(new ToolFeedbackResultHandler(ToolJson::encode([
+                    'ok' => false,
+                    'error' => $error,
+                ])));
+
+                continue;
+            }
+
             if (SshToolContext::commandApprovalRequired()) {
                 $tool->setCallable(new RunSshCommandPendingHandler());
             } elseif ($tool instanceof RunSshCommandTool) {
