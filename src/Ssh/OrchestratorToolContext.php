@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Ssh;
 
+use App\Chat\CommandApprovalMode;
 use App\Chat\CommandApprovalTrust;
 use App\Policy\CommandPolicyEngine;
 use App\Policy\PolicyDecisionStore;
@@ -121,9 +122,14 @@ final class OrchestratorToolContext
 
     public static function sessionTrustEnabled(?string $threadKey = null): bool
     {
+        return self::approvalMode($threadKey) !== CommandApprovalMode::AlwaysApprove;
+    }
+
+    public static function approvalMode(?string $threadKey = null): CommandApprovalMode
+    {
         $state = self::state($threadKey);
 
-        return $state->approvalTrust->isEnabled($state->threadKey);
+        return $state->approvalTrust->getMode($state->threadKey);
     }
 
     private static function state(?string $threadKey = null): OrchestratorToolContextState

@@ -2665,6 +2665,7 @@ const appOptions = {
                             stream: base + '/chat/stream',
                             subscribe: base + '/chat/stream/subscribe',
                             approval: base + '/approval/stream',
+                            approvalMode: base + '/approval-mode',
                             autoApprove: base + '/auto-approve',
                             feedback: base + '/feedback/stream',
                             stop: base + '/stop',
@@ -2675,6 +2676,7 @@ const appOptions = {
                         bootstrap: '/api/ai/bootstrap?conn_id=' + encodeURIComponent(props.connId),
                         stream: '/api/ai/chat/stream',
                         approval: '/api/ai/chat/approval/stream',
+                        approvalMode: '/api/ai/chat/approval-mode',
                         autoApprove: '/api/ai/chat/auto-approve',
                         feedback: '/api/ai/chat/feedback/stream',
                         stop: '/api/ai/chat/stop',
@@ -2750,8 +2752,7 @@ const appOptions = {
                     toolCallsOpen.value = false;
                     approval.value = null;
                     feedback.value = null;
-                    approvalAutoApprove.value = false;
-                    commandAutoApprove.value = false;
+                    commandApprovalMode.value = 'always_approve';
                     resetFeedbackForm();
                     errorText.value = '';
                     generationActive.value = false;
@@ -2891,12 +2892,81 @@ const appOptions = {
                 const configured = ref(false);
                 const enabled = ref(true);
                 const approval = ref(null);
-                const approvalAutoApprove = ref(false);
-                const commandAutoApprove = ref(false);
+                const commandApprovalMode = ref('always_approve');
+                const approvalModeOptions = [
+                    {
+                        value: 'always_approve',
+                        label: '逐条审批',
+                        hint: '每条命令都须人工批准',
+                        detail: '每条命令执行前均弹出审批；不受策略 AutoRun 影响，Deny 仍拒绝。',
+                    },
+                    {
+                        value: 'policy',
+                        label: '按策略执行',
+                        hint: 'AutoRun 自动执行，需审批类仍须批准',
+                        detail: 'AutoRun（如 ls）自动执行；RequireApproval（如 mysql、rm）须批准；Deny 拒绝。',
+                    },
+                    {
+                        value: 'force_auto',
+                        label: '全部自动执行',
+                        hint: '跳过所有审批（权限最大）',
+                        detail: '跳过全部审批，含策略 Deny；命令直接执行，仅建议在受控环境使用。',
+                    },
+                ];
                 const feedback = ref(null);
                 const feedbackAnswers = ref({});
                 const feedbackOtherTexts = ref({});
                 const errorText = ref('');
+
+                const approvalSubmitLabel = (approved, mode) => {
+                    if (!approved) {
+                        return '拒绝';
+                    }
+                    if (mode === 'policy') {
+                        return '批准（按策略执行）';
+                    }
+                    if (mode === 'force_auto') {
+                        return '批准（全部自动执行）';
+                    }
+                    return '批准';
+                };
+
+                const normalizeApprovalMode = (value, legacyAutoApprove = false) => {
+                    if (value === 'policy' || value === 'force_auto' || value === 'always_approve') {
+                        return value;
+                    }
+                    return legacyAutoApprove ? 'policy' : 'always_approve';
+                };
+
+                const setCommandApprovalMode = async (mode) => {
+                    if (!threadReady.value) return;
+                    if (busy.value && !approval.value && !feedback.value) return;
+                    const next = normalizeApprovalMode(mode);
+                    commandApprovalMode.value = next;
+                    try {
+                        const body = isSessionMode.value
+                            ? { approval_mode: next }
+                            : { conn_id: props.connId, approval_mode: next };
+                        const res = await fetch(chatApi.value.approvalMode, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body),
+                        });
+                        const json = await res.json();
+                        if (json.code !== 0) {
+                            errorText.value = json.msg || '更新审批模式失败';
+                            return;
+                        }
+                        commandApprovalMode.value = normalizeApprovalMode(
+                            json.data?.command_approval_mode,
+                            !!json.data?.command_auto_approve,
+                        );
+                        errorText.value = '';
+                    } catch (e) {
+                        errorText.value = e.message || '更新审批模式失败';
+                    }
+                };
 
                 const OTHER_OPTION_VALUES = new Set(['other', 'other_custom', 'custom']);
 
@@ -3145,11 +3215,11 @@ const appOptions = {
                         }
                         approval.value = json.data?.approval || null;
                         feedback.value = json.data?.feedback || null;
-                        commandAutoApprove.value = !!json.data?.command_auto_approve;
+                        commandApprovalMode.value = normalizeApprovalMode(
+                            json.data?.command_approval_mode,
+                            !!json.data?.command_auto_approve,
+                        );
                         tokenUsage.value = json.data?.token_usage ?? null;
-                        if (!approval.value) {
-                            approvalAutoApprove.value = false;
-                        }
                         resetFeedbackForm();
                         errorText.value = '';
 
@@ -3462,54 +3532,21 @@ const appOptions = {
 
                 const submitApproval = async (approved) => {
                     if (!threadReady.value || busy.value) return;
-                    const autoApprove = approved && approvalAutoApprove.value;
+                    const mode = commandApprovalMode.value;
+                    const label = approvalSubmitLabel(approved, mode);
                     messages.value.push({
                         kind: 'message',
                         role: 'user',
-                        content: approved
-                            ? (autoApprove ? '批准（本会话自动批准已开启）' : '批准')
-                            : '拒绝',
-                        html: approved
-                            ? (autoApprove ? '批准（本会话自动批准已开启）' : '批准')
-                            : '拒绝',
+                        content: label,
+                        html: label,
                         streaming: false,
                     });
-                    if (approved && autoApprove) {
-                        commandAutoApprove.value = true;
-                    }
                     approval.value = null;
-                    approvalAutoApprove.value = false;
                     await scrollToBottom();
                     const body = isSessionMode.value
-                        ? { approved: approved ? 1 : 0, auto_approve: autoApprove ? 1 : 0 }
-                        : { conn_id: props.connId, approved: approved ? 1 : 0, auto_approve: autoApprove ? 1 : 0 };
+                        ? { approved: approved ? 1 : 0, approval_mode: mode }
+                        : { conn_id: props.connId, approved: approved ? 1 : 0, approval_mode: mode };
                     await runStream(chatApi.value.approval, body);
-                };
-
-                const disableCommandAutoApprove = async () => {
-                    if (!threadReady.value) return;
-                    if (busy.value && !approval.value) return;
-                    try {
-                        const body = isSessionMode.value
-                            ? {}
-                            : { conn_id: props.connId };
-                        const res = await fetch(chatApi.value.autoApprove, {
-                            method: 'POST',
-                            credentials: 'same-origin',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(body),
-                        });
-                        const json = await res.json();
-                        if (json.code !== 0) {
-                            errorText.value = json.msg || '关闭自动批准失败';
-                            return;
-                        }
-                        commandAutoApprove.value = !!json.data?.command_auto_approve;
-                        approvalAutoApprove.value = false;
-                        errorText.value = '';
-                    } catch (e) {
-                        errorText.value = e.message || '关闭自动批准失败';
-                    }
                 };
 
                 const submitFeedback = async () => {
@@ -3589,8 +3626,7 @@ const appOptions = {
                     toolCallsOpen.value = false;
                     approval.value = null;
                     feedback.value = null;
-                    approvalAutoApprove.value = false;
-                    commandAutoApprove.value = false;
+                    commandApprovalMode.value = 'always_approve';
                     resetFeedbackForm();
                     errorText.value = '';
                     await bootstrap({ skipGenerationResume: true });
@@ -3613,8 +3649,7 @@ const appOptions = {
                     toolCallsOpen.value = false;
                     approval.value = null;
                     feedback.value = null;
-                    approvalAutoApprove.value = false;
-                    commandAutoApprove.value = false;
+                    commandApprovalMode.value = 'always_approve';
                     resetFeedbackForm();
                     bootstrap();
                 }, { immediate: true });
@@ -3633,6 +3668,30 @@ const appOptions = {
                     }
                 });
 
+                const approvalModeHelpOpen = ref(false);
+
+                const activeApprovalModeOption = computed(() => (
+                    approvalModeOptions.find((opt) => opt.value === commandApprovalMode.value)
+                    || approvalModeOptions[0]
+                ));
+
+                const toggleApprovalModeHelp = (event) => {
+                    event?.stopPropagation();
+                    approvalModeHelpOpen.value = !approvalModeHelpOpen.value;
+                };
+
+                const closeApprovalModeHelp = () => {
+                    approvalModeHelpOpen.value = false;
+                };
+
+                onMounted(() => {
+                    document.addEventListener('click', closeApprovalModeHelp);
+                });
+
+                onBeforeUnmount(() => {
+                    document.removeEventListener('click', closeApprovalModeHelp);
+                });
+
                 return {
                     toolCallsOpen,
                     toolCalls,
@@ -3648,8 +3707,12 @@ const appOptions = {
                     configured,
                     enabled,
                     approval,
-                    approvalAutoApprove,
-                    commandAutoApprove,
+                    commandApprovalMode,
+                    approvalModeOptions,
+                    activeApprovalModeOption,
+                    approvalModeHelpOpen,
+                    toggleApprovalModeHelp,
+                    setCommandApprovalMode,
                     feedback,
                     feedbackAnswers,
                     feedbackOtherTexts,
@@ -3667,7 +3730,6 @@ const appOptions = {
                     sendMessage,
                     onComposerKeydown,
                     submitApproval,
-                    disableCommandAutoApprove,
                     submitFeedback,
                     skipFeedback,
                     composerDisabled,
@@ -3771,11 +3833,54 @@ const appOptions = {
                                 </template>
                             </div>
                         </div>
-                        <div v-if="approval" class="ai-approval">
-                            <div v-if="commandAutoApprove" class="ai-auto-approve-banner ai-auto-approve-banner--in-approval">
-                                <span>本会话已开启自动执行：「自动执行」类命令将直接运行；「需审批」类（mysql、rm 等）仍须每次批准</span>
-                                <button type="button" @click="disableCommandAutoApprove">关闭</button>
+                        <div v-if="threadReady && configured" class="ai-chat-mode-bar">
+                            <div v-if="approvalModeHelpOpen" class="ai-approval-mode-popover" @click.stop>
+                                <div
+                                    v-for="opt in approvalModeOptions"
+                                    :key="opt.value"
+                                    class="ai-approval-mode-popover-item"
+                                    :class="{ 'ai-approval-mode-popover-item--active': commandApprovalMode === opt.value }"
+                                >
+                                    <strong>{{ opt.label }}</strong>
+                                    <span>{{ opt.detail }}</span>
+                                </div>
                             </div>
+                            <div class="ai-chat-mode-row">
+                                <div class="ai-chat-mode-label-wrap">
+                                    <span class="ai-approval-mode-label">命令审批</span>
+                                    <button
+                                        type="button"
+                                        class="ai-approval-mode-help"
+                                        :class="{ 'ai-approval-mode-help--active': approvalModeHelpOpen }"
+                                        title="查看全部模式说明"
+                                        aria-label="查看全部模式说明"
+                                        @click="toggleApprovalModeHelp"
+                                    >?</button>
+                                </div>
+                                <div class="ai-approval-mode-segments" role="radiogroup" aria-label="命令审批">
+                                    <label
+                                        v-for="opt in approvalModeOptions"
+                                        :key="opt.value"
+                                        class="ai-approval-mode-segment"
+                                        :class="{ 'ai-approval-mode-segment--active': commandApprovalMode === opt.value }"
+                                        :title="opt.detail"
+                                    >
+                                        <input
+                                            type="radio"
+                                            name="approval-mode"
+                                            :value="opt.value"
+                                            :checked="commandApprovalMode === opt.value"
+                                            @change="setCommandApprovalMode(opt.value)"
+                                        >
+                                        <span>{{ opt.label }}</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <p class="ai-approval-mode-caption" :title="activeApprovalModeOption.detail">
+                                {{ activeApprovalModeOption.detail }}
+                            </p>
+                        </div>
+                        <div v-if="approval" class="ai-approval">
                             <h4>待审核命令</h4>
                             <div class="ai-approval-list">
                                 <div
@@ -3796,21 +3901,13 @@ const appOptions = {
                                 </div>
                             </div>
                             <div class="actions">
-                                <label v-if="!commandAutoApprove" class="ai-approval-auto">
-                                    <input type="checkbox" v-model="approvalAutoApprove">
-                                    <span>开启后，策略「自动执行」类命令（如 ls）不再逐条审批；「需审批」类（如 mysql、rm）仍须每次批准</span>
-                                </label>
                                 <div class="ai-panel-action-buttons">
                                     <button type="button" @click="submitApproval(false)" :disabled="busy">拒绝</button>
                                     <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
                                 </div>
                             </div>
                         </div>
-                        <div v-else-if="commandAutoApprove" class="ai-auto-approve-banner">
-                            <span>本会话已开启自动执行：「自动执行」类命令将直接运行；「需审批」类（mysql、rm 等）仍须每次批准</span>
-                            <button type="button" @click="disableCommandAutoApprove">关闭</button>
-                        </div>
-                        <div v-if="feedback" class="ai-feedback">
+                        <div v-else-if="feedback" class="ai-feedback">
                             <h4>{{ feedback.message || '请回答' }}</h4>
                             <p class="ai-feedback-note">可按需填写后提交；不回答可点「跳过」继续对话。</p>
                             <div class="ai-feedback-form">
@@ -3875,17 +3972,13 @@ const appOptions = {
                             </div>
                             </div>
                             <div class="actions">
-                                <label v-if="!commandAutoApprove" class="ai-approval-auto">
-                                    <input type="checkbox" v-model="approvalAutoApprove">
-                                    <span>开启后，策略「自动执行」类命令（如 ls）不再逐条审批；「需审批」类（如 mysql、rm）仍须每次批准</span>
-                                </label>
                                 <div class="ai-panel-action-buttons">
                                     <button type="button" @click="skipFeedback" :disabled="busy">跳过</button>
                                     <button class="primary" type="button" @click="submitFeedback" :disabled="busy">提交</button>
                                 </div>
                             </div>
                         </div>
-                        <div v-if="!approval && !feedback" class="ai-composer">
+                        <div v-else class="ai-composer">
                             <textarea
                                 ref="composerRef"
                                 v-model="draft"

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Neuron\Agent\Middleware;
 
+use App\Chat\CommandApprovalMode;
 use App\Neuron\Agent\Tools\OrchestratorRunSshCommandExecutorHandler;
 use App\Neuron\Agent\Tools\OrchestratorRunSshCommandPendingHandler;
 use App\Neuron\Agent\Tools\RunSshCommandExecutorHandler;
@@ -91,57 +92,57 @@ final class RunSshCommandPolicyHelper
 
     private function assignTerminalHandler(RunSshCommandTool $tool, PolicyDecision $decision): void
     {
-        match ($decision->action) {
-            PolicyAction::Deny => $tool->setCallable(new ToolFeedbackResultHandler(ToolJson::encode([
+        if ($decision->action === PolicyAction::Deny && !$decision->shouldBypassDeny(SshToolContext::approvalMode())) {
+            $tool->setCallable(new ToolFeedbackResultHandler(ToolJson::encode([
                 'ok' => false,
                 'error' => $decision->reason,
                 'policy' => $decision->toUiPayload(),
-            ]))),
-            PolicyAction::AutoRun, PolicyAction::RequireApproval => $this->assignTerminalExecutionHandler($tool, $decision),
-        };
+            ])));
+
+            return;
+        }
+
+        $this->assignTerminalExecutionHandler($tool, $decision);
     }
 
     private function assignOrchestratorHandler(OrchestratorRunSshCommandTool $tool, PolicyDecision $decision): void
     {
-        match ($decision->action) {
-            PolicyAction::Deny => $tool->setCallable(new ToolFeedbackResultHandler(ToolJson::encode([
+        if ($decision->action === PolicyAction::Deny && !$decision->shouldBypassDeny(OrchestratorToolContext::approvalMode())) {
+            $tool->setCallable(new ToolFeedbackResultHandler(ToolJson::encode([
                 'ok' => false,
                 'error' => $decision->reason,
                 'policy' => $decision->toUiPayload(),
-            ]))),
-            PolicyAction::AutoRun, PolicyAction::RequireApproval => $this->assignOrchestratorExecutionHandler($tool, $decision),
-        };
+            ])));
+
+            return;
+        }
+
+        $this->assignOrchestratorExecutionHandler($tool, $decision);
     }
 
-    /**
-     * Evaluate policy for the current tool inputs (used by ToolApproval middleware).
-     */
     public static function terminalToolRequiresApproval(array $args): bool
     {
         return self::decisionRequiresApproval(
             self::evaluateTerminalDecision($args),
-            SshToolContext::sessionTrustEnabled(),
+            SshToolContext::approvalMode(),
         );
     }
 
-    /**
-     * Evaluate policy for the current tool inputs (used by ToolApproval middleware).
-     */
     public static function orchestratorToolRequiresApproval(array $args): bool
     {
         return self::decisionRequiresApproval(
             self::evaluateOrchestratorDecision($args),
-            OrchestratorToolContext::sessionTrustEnabled(),
+            OrchestratorToolContext::approvalMode(),
         );
     }
 
-    private static function decisionRequiresApproval(?PolicyDecision $decision, bool $sessionTrustEnabled): bool
+    private static function decisionRequiresApproval(?PolicyDecision $decision, CommandApprovalMode $mode): bool
     {
         if ($decision === null) {
-            return true;
+            return $mode !== CommandApprovalMode::ForceAuto;
         }
 
-        return $decision->approvalRequiredWithTrust($sessionTrustEnabled);
+        return $decision->approvalRequiredWithMode($mode);
     }
 
     /**
@@ -196,7 +197,7 @@ final class RunSshCommandPolicyHelper
 
     private function assignTerminalExecutionHandler(RunSshCommandTool $tool, PolicyDecision $decision): void
     {
-        if ($decision->approvalRequiredWithTrust(SshToolContext::sessionTrustEnabled())) {
+        if ($decision->approvalRequiredWithMode(SshToolContext::approvalMode())) {
             $tool->setCallable(new RunSshCommandPendingHandler());
         } else {
             $tool->setCallable(new RunSshCommandExecutorHandler($tool->getConnId()));
@@ -207,7 +208,7 @@ final class RunSshCommandPolicyHelper
         OrchestratorRunSshCommandTool $tool,
         PolicyDecision $decision,
     ): void {
-        if ($decision->approvalRequiredWithTrust(OrchestratorToolContext::sessionTrustEnabled())) {
+        if ($decision->approvalRequiredWithMode(OrchestratorToolContext::approvalMode())) {
             $tool->setCallable(new OrchestratorRunSshCommandPendingHandler());
         } else {
             $tool->setCallable(new OrchestratorRunSshCommandExecutorHandler($tool->getAiSessionId()));

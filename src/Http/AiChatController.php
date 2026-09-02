@@ -6,6 +6,7 @@ namespace App\Http;
 
 use App\Service\AuditService;
 use App\Chat\AiSettingsStore;
+use App\Chat\CommandApprovalMode;
 use App\Chat\ChatException;
 use App\Chat\ChatService;
 use App\Chat\ChatSettings;
@@ -94,6 +95,7 @@ final class AiChatController
             $connId = $this->connId($input);
             $approved = $this->bool($input['approved'] ?? false);
             $autoApprove = $this->bool($input['auto_approve'] ?? $input['auto_approve_session'] ?? false);
+            $approvalMode = $this->resolveApprovalMode($input, $approved, $autoApprove);
             $feedback = trim((string) ($input['feedback'] ?? ''));
         } catch (ChatException $e) {
             return $this->fail($e->getMessage(), 400, $e->data);
@@ -102,7 +104,7 @@ final class AiChatController
         $username = RequestAuth::username($request);
         $userLabel = $approved ? '批准' : '拒绝';
 
-        return $this->streamLocked($username, $connId, $userLabel, function (callable $emit, ?HttpStreamScope $scope) use ($request, $username, $connId, $approved, $autoApprove, $feedback): array {
+        return $this->streamLocked($username, $connId, $userLabel, function (callable $emit, ?HttpStreamScope $scope) use ($request, $username, $connId, $approved, $approvalMode, $feedback): array {
             $result = $this->chat->resumeApproval(
                 $username,
                 $connId,
@@ -110,7 +112,8 @@ final class AiChatController
                 $feedback !== '' ? $feedback : null,
                 $emit,
                 $scope,
-                $approved && $autoApprove,
+                false,
+                $approvalMode,
             );
             $this->audit->logAs(
                 $username,
@@ -120,14 +123,14 @@ final class AiChatController
                 null,
                 json_encode(['conn_id' => $connId, 'feedback' => $feedback], JSON_UNESCAPED_UNICODE) ?: null,
             );
-            if ($approved && $autoApprove) {
+            if ($approved && $approvalMode !== null && $approvalMode !== CommandApprovalMode::AlwaysApprove) {
                 $this->audit->logAs(
                     $username,
                     RequestAuth::clientIp($request),
                     'ai.command.auto_approve.enabled',
                     'ssh_session',
                     null,
-                    json_encode(['conn_id' => $connId], JSON_UNESCAPED_UNICODE) ?: null,
+                    json_encode(['conn_id' => $connId, 'approval_mode' => $approvalMode->value], JSON_UNESCAPED_UNICODE) ?: null,
                 );
             }
 
@@ -214,11 +217,54 @@ final class AiChatController
 
             return $this->ok([
                 'thread_key' => $connId,
+                'command_approval_mode' => CommandApprovalMode::AlwaysApprove->value,
                 'command_auto_approve' => false,
             ]);
         } catch (ChatException $e) {
             return $this->fail($e->getMessage(), 400, $e->data);
         }
+    }
+
+    public function setApprovalMode(ServerRequestInterface $request): ResponseInterface
+    {
+        if ($denied = $this->deny()) {
+            return $denied;
+        }
+
+        try {
+            $input = $this->input($request);
+            $connId = $this->connId($input);
+            $mode = CommandApprovalMode::fromMixed($input['approval_mode'] ?? $input['mode'] ?? null);
+            $this->chat->setCommandApprovalMode($connId, $mode);
+
+            return $this->ok([
+                'thread_key' => $connId,
+                'command_approval_mode' => $mode->value,
+                'command_auto_approve' => $mode !== CommandApprovalMode::AlwaysApprove,
+            ]);
+        } catch (ChatException $e) {
+            return $this->fail($e->getMessage(), 400, $e->data);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     */
+    private function resolveApprovalMode(array $input, bool $approved, bool $legacyAutoApprove): ?CommandApprovalMode
+    {
+        if (!$approved) {
+            return null;
+        }
+
+        if (isset($input['approval_mode']) || isset($input['mode'])) {
+            return CommandApprovalMode::fromMixed($input['approval_mode'] ?? $input['mode'] ?? null);
+        }
+
+        if ($legacyAutoApprove) {
+            return CommandApprovalMode::Policy;
+        }
+
+        return CommandApprovalMode::AlwaysApprove;
     }
 
     private function deny(): ?ResponseInterface

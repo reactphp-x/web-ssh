@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Ssh;
 
+use App\Chat\CommandApprovalMode;
+use App\Chat\CommandApprovalTrust;
 use App\Recording\SessionRecorder;
 use App\Repository\AiSessionRepository;
 use App\Repository\HostRepository;
@@ -45,6 +47,7 @@ final class SshExecBridge
         private readonly ?AiSessionLiveTranscript $liveTranscript = null,
         private readonly ?\App\Policy\CommandPolicyEngine $policyEngine = null,
         private readonly ?\App\Repository\CommandExecutionRepository $commandExecutions = null,
+        private readonly ?CommandApprovalTrust $approvalTrust = null,
     ) {
     }
 
@@ -300,7 +303,10 @@ final class SshExecBridge
                 threadKey: (string) $aiSessionId,
             ));
             if ($policyDecision->action === \App\Policy\PolicyAction::Deny) {
-                return reject(new RuntimeException($policyDecision->reason));
+                $mode = $this->approvalTrust?->getMode((string) $aiSessionId) ?? CommandApprovalMode::AlwaysApprove;
+                if (!$policyDecision->shouldBypassDeny($mode)) {
+                    return reject(new RuntimeException($policyDecision->reason));
+                }
             }
         } elseif ($this->isBlockedCommand($command)) {
             return reject(new RuntimeException('该命令被禁止通过 AI 执行（交互式/TUI 命令）。'));

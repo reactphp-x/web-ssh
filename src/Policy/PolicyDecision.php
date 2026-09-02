@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Policy;
 
+use App\Chat\CommandApprovalMode;
+
 final readonly class PolicyDecision
 {
     public function __construct(
@@ -19,19 +21,18 @@ final readonly class PolicyDecision
         return $this->action === PolicyAction::RequireApproval;
     }
 
-    public function approvalRequiredWithTrust(bool $sessionTrustEnabled): bool
+    public function approvalRequiredWithMode(CommandApprovalMode $mode): bool
     {
-        if ($this->action === PolicyAction::Deny) {
-            return false;
-        }
+        return match ($mode) {
+            CommandApprovalMode::ForceAuto => false,
+            CommandApprovalMode::AlwaysApprove => $this->action !== PolicyAction::Deny,
+            CommandApprovalMode::Policy => $this->action === PolicyAction::RequireApproval,
+        };
+    }
 
-        // 策略「需审批」始终逐条审核，会话自动批准不可绕过。
-        if ($this->action === PolicyAction::RequireApproval) {
-            return true;
-        }
-
-        // AutoRun：未开启会话自动批准时仍须逐条审核。
-        return !$sessionTrustEnabled;
+    public function shouldBypassDeny(CommandApprovalMode $mode): bool
+    {
+        return $mode === CommandApprovalMode::ForceAuto;
     }
 
     /**

@@ -2,7 +2,7 @@
 
 **带 AI 的 Web SSH 运维平台** — 用自然语言描述任务，AI 提议命令、你审核批准、自动在远端 exec 并继续推理；同时提供多标签终端、跨主机编排、现场查看与会话回放。
 
-> 在侧边栏 **AI 设置**（`#/settings/ai`）中配置 Provider 与 API Key 并启用后，**AI 助手**（单主机）与 **AI 编排**（跨主机）即可使用。命令执行受 **命令策略**（`#/settings/command-policy`）约束：默认每条命令逐条审批，开启会话自动批准后按策略放行；危险命令直接拒绝。底层仍是自托管 Web SSH 网关：凭据加密、跳板机、审计与 2FA。
+> 在侧边栏 **AI 设置**（`#/settings/ai`）中配置 Provider 与 API Key 并启用后，**AI 助手**（单主机）与 **AI 编排**（跨主机）即可使用。命令执行受 **命令策略**（`#/settings/command-policy`）约束：底部可选 **逐条审批**（默认）、**按策略执行** 或 **全部自动执行**；危险命令在「按策略执行」下直接拒绝。底层仍是自托管 Web SSH 网关：凭据加密、跳板机、审计与 2FA。
 
 ## 目录
 
@@ -38,7 +38,7 @@
 | 能力 | 一句话 |
 |---|---|
 | **自然语言运维** | 描述「查磁盘、看 nginx 日志、重启服务」等任务，AI 拆解步骤并给出可执行命令 |
-| **人工批准闸门** | 写操作必须点 **批准** 才执行；**只读命令**由策略引擎自动放行；危险命令直接拒绝 |
+| **人工批准闸门** | 默认逐条审批；可切换为按策略自动放行或全部自动执行；审批卡片显示 **策略标签** 与命令摘要 |
 | **命令策略引擎** | 基于 [unbash](https://github.com/reactphp-x/unbash) 静态解析 Bash AST，按拒绝 / 需审批 / 自动执行三档决策 |
 | **双模式覆盖** | **AI 助手** 绑定当前终端主机；**AI 编排** 跨多台机器自动选机、分段执行 |
 | **exec 与 PTY 分离** | AI 走独立 SSH exec，输出进 **现场** 流（`[AI]` 标记），不污染交互终端 |
@@ -225,21 +225,21 @@ sequenceDiagram
         S-->>AI: 终端最近输出
     end
     AI->>P: 解析并评估 run_ssh_command
-    alt 未开启会话自动批准 或 需审批 RequireApproval
+    alt 审批模式为逐条审批 或 策略为 RequireApproval
         AI->>U: 待审核命令
         alt 用户批准
-            U->>AI: 批准（可选开启会话自动批准）
+            U->>AI: 批准（可切换审批模式）
             AI->>S: run_ssh_command
             S->>H: SSH exec
             H-->>AI: 命令结果
         else 拒绝
             U->>AI: 拒绝
         end
-    else 已开启会话自动批准且策略 AutoRun/RequireApproval
+    else 按策略执行且 AutoRun，或全部自动执行
         AI->>S: run_ssh_command
         S->>H: SSH exec
         H-->>AI: 命令结果
-    else 危险 Deny
+    else 按策略执行且 Deny（全部自动执行模式除外）
         P-->>AI: 拒绝原因
         AI->>U: 调整方案
     end
@@ -430,15 +430,16 @@ docker compose up --build
 1. 在底部输入框描述任务（如「查看磁盘使用并清理 /tmp」）
 2. AI 分析后可调用工具：
    - **`get_terminal_context`** — 读取终端最近输出（只读，**无需审核**）
-   - **`run_ssh_command`** — 提议 shell 命令；经 **命令策略** 判定：
-     - **AutoRun**（如 `ls`、`cat`、`ps`、`df`）→ 默认逐条审批；开启会话自动批准后自动执行
-     - **RequireApproval**（如 `rm`、`systemctl`、`mysql`）→ **始终逐条审批**（会话自动批准无效）
-     - **Deny**（如 `vim`、`curl | bash`）→ 直接拒绝
+   - **`run_ssh_command`** — 提议 shell 命令；经 **命令策略** 判定 AutoRun / RequireApproval / Deny，再结合底部 **命令审批模式** 决定是否弹窗：
+     - **AutoRun**（如 `ls`、`cat`、`ps`、`df`）→ 默认逐条审批；**按策略执行** 时自动执行
+     - **RequireApproval**（如 `rm`、`systemctl`、`mysql`）→ **逐条审批** 与 **按策略执行** 下均须批准；**全部自动执行** 时跳过
+     - **Deny**（如 `vim`）→ **逐条审批** / **按策略执行** 下直接拒绝；**全部自动执行** 时仍会执行
      - 可选 `timeout_sec` 指定超时秒数
    - **`ask_user`** — 需求不明确时弹出选项（单选/多选）
-3. 出现 **待审核命令** 时，在侧栏底部点击 **批准** 或 **拒绝**；可勾选 **开启后会话内后续命令按策略自动执行**。审批卡片显示 **策略标签**（自动执行 / 需审批 / 已拒绝）与命令摘要
-4. 批准后通过 **独立 SSH exec** 执行；输出回传 AI 继续推理（可多轮）
-5. 点击 **工具调用** 可展开查看每次工具的参数与返回（消息 timeline 与工具卡片交错展示）
+3. 底部 **命令审批** 分段选择器（位于输入框 / 审批 / 反馈弹窗之上）：**逐条审批**（默认）、**按策略执行**、**全部自动执行**；当前模式有一行摘要，点击 **?** 查看完整说明
+4. 出现 **待审核命令** 时，点击 **批准** 或 **拒绝**；审批卡片显示 **策略标签**（自动执行 / 需审批 / 已拒绝）与命令摘要
+5. 批准后通过 **独立 SSH exec** 执行；输出回传 AI 继续推理（可多轮）
+6. 点击 **工具调用** 可展开查看每次工具的参数与返回（消息 timeline 与工具卡片交错展示）
 
 ### API
 
@@ -446,18 +447,19 @@ docker compose up --build
 
 ```text
 GET  /api/ai/bootstrap?conn_id={conn_id}
-POST /api/ai/chat/stream           { conn_id, message }
-POST /api/ai/chat/approval/stream  { conn_id, approved: 1|0 }
-POST /api/ai/chat/feedback/stream  { conn_id, answers: {} }
-POST /api/ai/chat/stop             { conn_id }
-POST /api/ai/chat/reset            { conn_id }
+POST /api/ai/chat/stream              { conn_id, message }
+POST /api/ai/chat/approval/stream     { conn_id, approved: 1|0, approval_mode? }
+POST /api/ai/chat/approval-mode       { conn_id, approval_mode }   # always_approve | policy | force_auto
+POST /api/ai/chat/feedback/stream     { conn_id, answers: {} }
+POST /api/ai/chat/stop                { conn_id }
+POST /api/ai/chat/reset               { conn_id }
 ```
 
 命令审核记录写入 **操作日志**（`ai.command.approved` / `ai.command.rejected`）。
 
 ### 说明与限制
 
-- 策略引擎在 Neuron 中间件与 SSH Bridge **双层**校验；即使绕过 UI，Bridge 仍会拦截 Deny 类命令
+- 策略引擎在 Neuron 中间件与 SSH Bridge **双层**校验；**逐条审批** / **按策略执行** 下即使绕过 UI，Bridge 仍会拦截 Deny；**全部自动执行** 可绕过 Deny
 - 仅 AI exec 路径受策略约束；Web 终端 PTY 手动输入不受限
 - AI exec 每次为**新 shell 进程**，工作目录/环境可能与交互 PTY 不一致（例如在 PTY 里 `cd` 后，AI 仍可能从 home 执行）
 - AI exec 无 stdin，交互式命令（vim、top、mysql 客户端等）会被策略拒绝或挂起直至超时；请在左侧 PTY 终端手动操作
@@ -535,7 +537,7 @@ flowchart LR
 
 1. 侧边栏进入 **AI 编排**，点击 **新建会话**（或从历史列表 **继续**）
 2. 在右侧输入任务，例如：「检查 web-01 和 web-02 的 nginx 是否在运行」
-3. AI 调用工具（见下表）；遇到 **RequireApproval** 的 **`run_ssh_command`** 时在底部 **批准 / 拒绝**（每条需审批命令均须人工确认）
+3. AI 调用工具（见下表）；`run_ssh_command` 是否弹审批取决于 **命令审批模式** 与策略判定（RequireApproval 在 **按策略执行** 下仍须批准）
 4. 批准后 `SshExecBridge` 对该 `host_id` 建立（或复用）exec 连接并执行；输出写入左侧 **现场** 与 live log
 5. AI 根据输出继续推理，可切换主机执行下一条命令，直至任务完成
 6. 刷新 `#/ai/session/{id}` 后，**现场** 通过 SSE `replay` 事件或 transcript API 恢复；聊天 timeline 含工具卡片
@@ -578,7 +580,8 @@ POST /api/ai/sessions                              # 新建 { title? }
 GET  /api/ai/sessions/{id}                         # 会话详情 + segments
 GET  /api/ai/sessions/{id}/bootstrap               # 聊天 bootstrap（含 timeline）
 POST /api/ai/sessions/{id}/chat/stream             { message }
-POST /api/ai/sessions/{id}/approval/stream         { approved: 1|0 }
+POST /api/ai/sessions/{id}/approval/stream         { approved: 1|0, approval_mode? }
+POST /api/ai/sessions/{id}/approval-mode           { approval_mode }   # always_approve | policy | force_auto
 POST /api/ai/sessions/{id}/feedback/stream         { answers: {} }
 POST /api/ai/sessions/{id}/stop
 POST /api/ai/sessions/{id}/reset
@@ -721,28 +724,36 @@ POST   /api/settings/ai/models                       # 拉取 Provider 模型列
 
 ## 命令策略（Web 面板）
 
-AI 执行 `run_ssh_command` 前，**命令策略引擎**会用 [reactphp-x/unbash](https://github.com/reactphp-x/unbash) 将命令解析为 Bash AST，再按规则给出三种决策：
+AI 执行 `run_ssh_command` 前，**命令策略引擎**会用 [reactphp-x/unbash](https://github.com/reactphp-x/unbash) 将命令解析为 Bash AST，再按规则给出三种决策。**是否弹出审批**还取决于聊天底部 **命令审批模式**（与会话绑定，Redis/内存持久化）：
 
-| 决策 | 策略含义 | 未开启会话自动批准 | 已开启会话自动批准 |
-|---|---|---|---|
-| **AutoRun** | 策略允许自动执行 | **逐条审批** | 自动执行 |
-| **RequireApproval** | 策略标记为需审批 | **逐条审批** | **逐条审批** |
-| **Deny** | 拒绝并反馈 AI | 拒绝 | 拒绝 |
+| 命令审批模式 | API 值 | AutoRun | RequireApproval | Deny |
+|---|---|---|---|---|
+| **逐条审批**（默认） | `always_approve` | 须审批 | 须审批 | 拒绝 |
+| **按策略执行** | `policy` | 自动执行 | 须审批 | 拒绝 |
+| **全部自动执行** | `force_auto` | 自动执行 | 自动执行 | **也执行** |
 
-**默认（未勾选会话自动批准）优先级最高**：AutoRun 与 RequireApproval 均须逐条审批。勾选后，仅 **AutoRun** 类命令可自动执行；**RequireApproval**（如 `mysql`、`rm`）与会话自动批准无关，始终逐条审批。
+| 策略决策 | 含义 |
+|---|---|
+| **AutoRun** | 策略允许自动执行（如 `ls`、`cat`） |
+| **RequireApproval** | 策略标记为需审批（如 `rm`、`mysql`） |
+| **Deny** | 拒绝并反馈 AI（如 `vim`） |
+
+**默认逐条审批**：新会话即使 `ls` 也会弹出审批——这是预期行为。**按策略执行** 适合日常巡检：只读命令自动跑，写操作与敏感命令仍须批准。**全部自动执行** 权限最大，会绕过 Deny，仅建议在隔离/受控环境使用。
+
+旧版 API 参数 `auto_approve: 1` 等价于 `approval_mode: policy`。
 
 ### 自动执行：何时发生、风险与建议
 
-#### 什么情况下会**自动执行**（AutoRun）
+#### 什么情况下会**自动执行**（不经审批弹窗）
 
-策略引擎会先给出 AutoRun / RequireApproval / Deny 判定；**是否真正跳过审批**还取决于会话是否已开启自动批准（见上表）。
+策略引擎先给出 AutoRun / RequireApproval / Deny；**是否跳过审批**由命令审批模式决定（见上表）。
 
-满足以下**全部**条件时，命令不经人工审批直接 exec：
+在 **按策略执行** 下，满足以下**全部**条件时 AutoRun 命令直接 exec：
 
-1. **本会话已开启自动批准**（批准某条命令时勾选，或侧栏显示自动执行横幅）
-2. 策略判定为 **AutoRun**（RequireApproval 与会话自动批准无关，始终须审批）
+1. 命令审批模式为 **按策略执行** 或 **全部自动执行**
+2. 策略判定为 **AutoRun**（RequireApproval 在「按策略执行」下仍须审批）
 3. 解析出的可执行文件**不在** `deny_binaries` 中
-4. 未命中内置硬拒绝（如 `curl | bash` 管道）
+4. 未命中需审批管道规则（如 `curl | bash` 会走 RequireApproval）
 5. 命令可被 AST **完整解析**（解析失败时保守降级为 RequireApproval）
 
 典型会自动执行的命令（以当前内置默认为例）：
@@ -753,7 +764,7 @@ AI 执行 `run_ssh_command` 前，**命令策略引擎**会用 [reactphp-x/unbas
 | 文本读取 | `cat`、`head`、`tail`、`grep`、`awk`（纯读） | 仍可能读到敏感内容（见下） |
 | 进程与资源观测 | `ps`、`df`、`du`、`free`、`uptime` | 巡检类只读 |
 | 网络观测 | `ss`、`netstat`、`ip addr show` | 未列入拒绝/审批列表时自动执行 |
-| 容器只读 | `docker ps`、`docker logs --tail 50` | 须先开启会话自动批准；`docker exec … mysql …` 策略为 RequireApproval |
+| 容器只读 | `docker ps`、`docker logs --tail 50` | 须为 **按策略执行** 或 **全部自动执行**；`docker exec … mysql …` 策略为 RequireApproval |
 | Neuron 只读工具 | `get_terminal_context`、`list_hosts`、`get_command_context` | 不发起 SSH exec，始终自动调用 |
 
 #### 自动执行的主要**风险**
@@ -767,7 +778,7 @@ AI 执行 `run_ssh_command` 前，**命令策略引擎**会用 [reactphp-x/unbas
 | **只读≠无害** | 某些命令虽不改文件，但会触发副作用（如带写参数的 `curl`、读设备节点） |
 | **批量放大** | 编排模式跨多机时，一条自动执行的命令会在每台目标上立即运行 |
 
-**结论**：未开启会话自动批准时，**所有**非 Deny 命令均须逐条审批；开启自动批准后，AutoRun 类命令方可无人值守执行，但仍需注意下述风险。
+**结论**：**逐条审批** 下所有非 Deny 命令均须人工批准；**按策略执行** 下 AutoRun 方可无人值守，但仍需注意下述风险。**全部自动执行** 会连 Deny 一并放行，风险最高。
 
 #### 什么情况**不建议**依赖自动执行
 
@@ -780,15 +791,16 @@ AI 执行 `run_ssh_command` 前，**命令策略引擎**会用 [reactphp-x/unbas
 | **含密钥与合规要求** | 涉及凭据、用户数据、审计留痕时，宜逐条审批，勿依赖自动执行 |
 | **不完全信任模型输出** | 新模型、复杂任务、多步推理时，人工过一遍命令再批准 |
 | **交互式 / 长连接** | `vim`、`top`、`mysql` 客户端等已在 `deny_binaries`；AI exec 无 stdin，不应改为 AutoRun |
-| **远程脚本注入** | `curl \| bash` 等已在内置硬拒绝；勿从 `deny_binaries` 中移除 |
+| **远程脚本注入** | `curl \| bash` 等管道组合会标记为需审批，须逐条批准 |
 | **解析不确定** | 含大量变量、here-doc、动态生成的命令会降级为 RequireApproval——这是预期行为 |
 
 #### 配置调优方向
 
-- **默认逐条审批**：新会话未勾选自动批准前，即使 `ls` 也会弹出审批——这是预期行为
-- **更保守**：把更多二进制加入 `require_approval_binaries`（例如全局追加 `"docker"`），开启自动批准后仍标记为需审批
+- **默认逐条审批**：新会话默认模式，即使 `ls` 也会弹出审批
+- **更保守**：保持 **逐条审批**，或把更多二进制加入 `require_approval_binaries`（例如全局追加 `"docker"`）
 - **更严格**：将绝不允许 AI 触达的二进制加入 `deny_binaries`（如 `dd`、`reboot` 已在默认拒绝列表）
-- **开启自动批准**：仅 **AutoRun** 类命令（如 `ls`）不再逐条弹窗；**RequireApproval** 仍须每次批准
+- **日常巡检**：切换为 **按策略执行**，AutoRun 类命令（如 `ls`）不再逐条弹窗；RequireApproval 仍须每次批准
+- **勿滥用全部自动执行**：会绕过 Deny，等同关闭策略硬门禁
 
 ### 入口
 
@@ -809,7 +821,7 @@ AI 执行 `run_ssh_command` 前，**命令策略引擎**会用 [reactphp-x/unbas
 均为**增量覆盖**（数组合并、同键追加）：
 
 - `deny_binaries` — 拒绝的可执行文件
-- `require_approval_binaries` — 需人工审批的可执行文件（会话自动批准无效）
+- `require_approval_binaries` — 需人工审批的可执行文件（**按策略执行** 下 RequireApproval 始终须审批）
 
 示例（全局追加需审批命令）：
 
@@ -838,7 +850,7 @@ DELETE /api/settings/command-policy/{id}    # 删除覆盖策略
 ### 说明与限制
 
 - **静态分析、不展开变量**：嵌套在 `sh -c` 内的脚本会二次解析；变量路径无法静态确定时可能漏检
-- **内置硬拒绝**：`curl \| bash` 等管道组合（不写在配置里）
+- **内置需审批管道**：`curl \| bash`、`wget \| sh` 等组合（不写在配置里，命中后 RequireApproval）
 - **Web 终端 PTY** 手动输入不受策略约束，仅 AI exec 路径生效
 - 解析失败时保守降级为 RequireApproval
 
@@ -1032,8 +1044,8 @@ Web SSH 会把 shell 暴露到浏览器，请务必：
 - 限制网络访问（防火墙 / 反向代理 IP 白名单）
 - 妥善保管 `APP_KEY` 与 `.env`，不要提交到版本库
 - AI 批准的命令等同你在服务器上执行 shell，务必审阅后再点批准
-- **命令策略**会拦截 `curl | bash` 等高危命令；`rm` 等写操作需人工审批，但无法覆盖所有误操作
-- 会话「自动批准」开启后，仅 **AutoRun** 命令自动执行；**RequireApproval** 仍须逐条审批；**Deny** 始终拒绝
+- **命令策略**会标记 `curl | bash` 等管道为需审批；`rm` 等写操作需人工审批，但无法覆盖所有误操作
+- **按策略执行** 下仅 AutoRun 自动执行，RequireApproval 仍须逐条审批，Deny 拒绝；**全部自动执行** 会绕过 Deny，请谨慎使用
 - Docker 中 SSH 私钥挂载为只读
 
 <a id="test"></a>

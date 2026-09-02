@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Ssh;
 
+use App\Chat\CommandApprovalMode;
+use App\Chat\CommandApprovalTrust;
 use App\Recording\SessionRecorder;
 use React\Promise\PromiseInterface;
 use RuntimeException;
@@ -30,6 +32,7 @@ final class SshSessionBridge
         private readonly ?\App\Policy\CommandPolicyEngine $policyEngine = null,
         private readonly ?\App\Repository\CommandExecutionRepository $commandExecutions = null,
         private readonly ?\App\Service\AuditService $audit = null,
+        private readonly ?CommandApprovalTrust $approvalTrust = null,
     ) {
     }
 
@@ -123,7 +126,10 @@ final class SshSessionBridge
                 threadKey: $connId,
             ));
             if ($policyDecision->action === \App\Policy\PolicyAction::Deny) {
-                return reject(new RuntimeException($policyDecision->reason));
+                $mode = $this->approvalTrust?->getMode($connId) ?? CommandApprovalMode::AlwaysApprove;
+                if (!$policyDecision->shouldBypassDeny($mode)) {
+                    return reject(new RuntimeException($policyDecision->reason));
+                }
             }
         } elseif ($this->isBlockedCommand($command)) {
             return reject(new RuntimeException('该命令被禁止通过 AI 执行（交互式/TUI 命令）。'));

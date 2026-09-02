@@ -10,14 +10,13 @@ use Throwable;
 use function React\Async\await;
 
 /**
- * Per-thread "auto-approve run_ssh_command for this session" flag.
- * Redis first, in-process fallback if Redis is unavailable.
+ * Per-thread command approval mode for AI run_ssh_command.
  */
 final class CommandApprovalTrust
 {
     private const TTL = 86400;
 
-    /** @var array<string, true> */
+    /** @var array<string, string> */
     private static array $memory = [];
 
     public function __construct(
@@ -25,16 +24,51 @@ final class CommandApprovalTrust
     ) {
     }
 
-    public function enable(string $threadKey): void
+    public function setMode(string $threadKey, CommandApprovalMode $mode): void
     {
         if ($threadKey === '') {
             return;
         }
 
-        self::$memory[$threadKey] = true;
-        $this->tryRedis(function () use ($threadKey) {
-            return await($this->redis->set($this->key($threadKey), '1', 'EX', self::TTL));
+        if ($mode === CommandApprovalMode::AlwaysApprove) {
+            $this->disable($threadKey);
+
+            return;
+        }
+
+        self::$memory[$threadKey] = $mode->value;
+        $this->tryRedis(function () use ($threadKey, $mode) {
+            return await($this->redis->set($this->key($threadKey), $mode->value, 'EX', self::TTL));
         });
+    }
+
+    public function getMode(string $threadKey): CommandApprovalMode
+    {
+        if ($threadKey === '') {
+            return CommandApprovalMode::AlwaysApprove;
+        }
+
+        if (isset(self::$memory[$threadKey])) {
+            return CommandApprovalMode::fromMixed(self::$memory[$threadKey]);
+        }
+
+        if ($this->tryRedis(function () use ($threadKey) {
+            return await($this->redis->get($this->key($threadKey)));
+        }, $value)) {
+            if ($value === '1' || $value === 1 || $value === true) {
+                return CommandApprovalMode::Policy;
+            }
+
+            return CommandApprovalMode::fromMixed(is_string($value) ? $value : null);
+        }
+
+        return CommandApprovalMode::AlwaysApprove;
+    }
+
+    /** @deprecated Use setMode(Policy) */
+    public function enable(string $threadKey): void
+    {
+        $this->setMode($threadKey, CommandApprovalMode::Policy);
     }
 
     public function disable(string $threadKey): void
@@ -51,21 +85,7 @@ final class CommandApprovalTrust
 
     public function isEnabled(string $threadKey): bool
     {
-        if ($threadKey === '') {
-            return false;
-        }
-
-        if (isset(self::$memory[$threadKey])) {
-            return true;
-        }
-
-        if ($this->tryRedis(function () use ($threadKey) {
-            return await($this->redis->get($this->key($threadKey)));
-        }, $value)) {
-            return $value === '1' || $value === 1 || $value === true;
-        }
-
-        return false;
+        return $this->getMode($threadKey) !== CommandApprovalMode::AlwaysApprove;
     }
 
     public function resetMemory(): void

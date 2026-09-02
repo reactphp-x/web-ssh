@@ -7,7 +7,7 @@ namespace App\Policy;
 final class CommandPolicyEngine
 {
     /** @var list<list<string>> */
-    private const BUILTIN_DENY_PIPELINES = [
+    private const BUILTIN_APPROVAL_PIPELINES = [
         ['curl', 'bash'],
         ['curl', 'sh'],
         ['wget', 'bash'],
@@ -48,8 +48,8 @@ final class CommandPolicyEngine
         if ($this->requiresApproval($inspection, $config)) {
             return new PolicyDecision(
                 PolicyAction::RequireApproval,
-                '该命令需人工审批后执行（会话自动批准无效）。',
-                'require_approval',
+                $this->approvalReason($inspection, $config),
+                $this->approvalMatchedRule($inspection, $config),
                 $inspection,
             );
         }
@@ -84,10 +84,6 @@ final class CommandPolicyEngine
             }
         }
 
-        if ($this->matchesDeniedPipeline($inspection)) {
-            return ['deny_pipeline', '禁止通过管道将远程内容直接交给 shell 执行。'];
-        }
-
         return [null, ''];
     }
 
@@ -96,18 +92,41 @@ final class CommandPolicyEngine
      */
     private function requiresApproval(CommandInspection $inspection, array $config): bool
     {
+        return $this->approvalMatchedRule($inspection, $config) !== null;
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     */
+    private function approvalReason(CommandInspection $inspection, array $config): string
+    {
+        return match ($this->approvalMatchedRule($inspection, $config)) {
+            'approval_pipeline' => '通过管道将远程内容交给 shell 执行，需人工审批。',
+            default => '该命令需人工审批后执行（会话自动批准无效）。',
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     */
+    private function approvalMatchedRule(CommandInspection $inspection, array $config): ?string
+    {
         $approvalBinaries = $this->stringSet($config['require_approval_binaries'] ?? []);
 
         foreach ($inspection->invocations as $invocation) {
             if ($this->matchesBinarySet($invocation, $approvalBinaries)) {
-                return true;
+                return 'require_approval';
             }
         }
 
-        return false;
+        if ($this->matchesApprovalPipeline($inspection)) {
+            return 'approval_pipeline';
+        }
+
+        return null;
     }
 
-    private function matchesDeniedPipeline(CommandInspection $inspection): bool
+    private function matchesApprovalPipeline(CommandInspection $inspection): bool
     {
         $byPipeline = [];
         foreach ($inspection->invocations as $invocation) {
@@ -115,7 +134,7 @@ final class CommandPolicyEngine
         }
 
         foreach ($byPipeline as $binaries) {
-            foreach (self::BUILTIN_DENY_PIPELINES as $pair) {
+            foreach (self::BUILTIN_APPROVAL_PIPELINES as $pair) {
                 $left = $this->normalizeBinary($pair[0]);
                 $right = $this->normalizeBinary($pair[1]);
                 for ($i = 0; $i < count($binaries) - 1; ++$i) {

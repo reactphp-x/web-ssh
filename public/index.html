@@ -1743,12 +1743,163 @@
             display: flex;
             flex-wrap: wrap;
             align-items: center;
-            justify-content: space-between;
+            justify-content: flex-end;
             gap: 8px;
             flex-shrink: 0;
             padding-top: 8px;
             border-top: 1px solid #2a2f3a;
             background: #151821;
+        }
+
+        .ai-chat-mode-bar {
+            position: relative;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 6px 12px;
+            border-top: 1px solid #2a2f3a;
+            background: #151821;
+        }
+
+        .ai-chat-mode-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .ai-chat-mode-label-wrap {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .ai-chat-mode-bar .ai-approval-mode-label {
+            font-size: 12px;
+            color: #9aa4b2;
+            line-height: 1;
+        }
+
+        .ai-approval-mode-help {
+            width: 16px;
+            height: 16px;
+            padding: 0;
+            border-radius: 50%;
+            border: 1px solid #4a5568;
+            background: transparent;
+            color: #9aa4b2;
+            font-size: 10px;
+            line-height: 1;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+
+        .ai-approval-mode-help:hover,
+        .ai-approval-mode-help--active {
+            border-color: #5b8def;
+            color: #cfe0ff;
+            background: rgba(91, 141, 239, 0.12);
+        }
+
+        .ai-approval-mode-caption {
+            margin: 0;
+            font-size: 11px;
+            line-height: 1.35;
+            color: #7d8696;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .ai-approval-mode-popover {
+            position: absolute;
+            left: 12px;
+            right: 12px;
+            bottom: calc(100% - 2px);
+            padding: 8px 10px;
+            border: 1px solid #3a4254;
+            border-radius: 6px;
+            background: #1d2330;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+            z-index: 6;
+        }
+
+        .ai-approval-mode-popover-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            font-size: 11px;
+            line-height: 1.45;
+            color: #9aa4b2;
+        }
+
+        .ai-approval-mode-popover-item + .ai-approval-mode-popover-item {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #2a2f3a;
+        }
+
+        .ai-approval-mode-popover-item strong {
+            color: #c5cad3;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .ai-approval-mode-popover-item--active strong {
+            color: #9fd4ff;
+        }
+
+        .ai-approval-mode-segments {
+            display: flex;
+            flex: 1;
+            min-width: 0;
+            border: 1px solid #3a4254;
+            border-radius: 6px;
+            overflow: hidden;
+            background: #1a1f2a;
+        }
+
+        .ai-approval-mode-segment {
+            position: relative;
+            flex: 1 1 0;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 5px 4px;
+            font-size: 11px;
+            line-height: 1.25;
+            text-align: center;
+            color: #b8c0cc;
+            cursor: pointer;
+            border-right: 1px solid #3a4254;
+            user-select: none;
+        }
+
+        .ai-approval-mode-segment:last-child {
+            border-right: none;
+        }
+
+        .ai-approval-mode-segment input {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .ai-approval-mode-segment span {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 100%;
+        }
+
+        .ai-approval-mode-segment--active {
+            background: #243047;
+            color: #e8edf4;
+            font-weight: 500;
         }
 
         .ai-panel-action-buttons {
@@ -1770,6 +1921,60 @@
             max-width: calc(100% - 180px);
             cursor: pointer;
             line-height: 1.4;
+        }
+
+        .ai-approval-mode {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .ai-approval-mode-label {
+            font-size: 12px;
+            color: #9aa4b2;
+            flex-shrink: 0;
+        }
+
+        .ai-approval-mode-options {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .ai-approval-mode-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+            font-size: 12px;
+            color: #b8c0cc;
+            cursor: pointer;
+            line-height: 1.35;
+            padding: 4px 6px;
+            border-radius: 4px;
+            border: 1px solid transparent;
+        }
+
+        .ai-approval-mode-option--active {
+            border-color: #3d6ea5;
+            background: rgba(61, 110, 165, 0.12);
+        }
+
+        .ai-approval-mode-option input {
+            margin: 2px 0 0;
+            flex-shrink: 0;
+        }
+
+        .ai-approval-mode-title {
+            color: #d8e0ea;
+            font-weight: 500;
+        }
+
+        .ai-approval-mode-hint {
+            display: block;
+            font-size: 11px;
+            color: #8a94a3;
+            margin-top: 1px;
         }
 
         .ai-approval-auto input {
@@ -1830,13 +2035,6 @@
         .ai-field-optional {
             color: #6b7280;
             font-weight: normal;
-        }
-
-        .ai-feedback .actions {
-            display: flex;
-            gap: 8px;
-            justify-content: flex-end;
-            flex-shrink: 0;
         }
 
         .ai-options {
@@ -2132,6 +2330,11 @@
 
             .ai-composer textarea {
                 font-size: 16px;
+            }
+
+            .ai-approval-mode-segment {
+                font-size: 12px;
+                padding: 7px 4px;
             }
 
             .ai-send-btn {

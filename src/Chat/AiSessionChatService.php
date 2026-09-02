@@ -88,6 +88,7 @@ final class AiSessionChatService
             'approval' => $approval,
             'feedback' => $feedback,
             'generation' => $generation,
+            'command_approval_mode' => $this->approvalTrust->getMode($key)->value,
             'command_auto_approve' => $this->approvalTrust->isEnabled($key),
             'token_usage' => ChatTokenUsage::summarize($this->fileHistory($aiSessionId), $this->settings),
             'urls' => [
@@ -135,6 +136,7 @@ final class AiSessionChatService
         ?callable $emit = null,
         ?HttpStreamScope $scope = null,
         bool $autoApproveSession = false,
+        ?CommandApprovalMode $sessionMode = null,
     ): array {
         $token = $this->workflowResumeToken($aiSessionId);
         $request = $this->loadApprovalRequest($token);
@@ -154,12 +156,18 @@ final class AiSessionChatService
         }
 
         $threadKey = $this->threadKey($aiSessionId);
-        if ($approved && $autoApproveSession) {
-            $this->approvalTrust->enable($threadKey);
+        $resolvedMode = $sessionMode
+            ?? ($autoApproveSession ? CommandApprovalMode::Policy : null);
+        if ($approved && $resolvedMode !== null) {
+            $this->approvalTrust->setMode($threadKey, $resolvedMode);
         }
 
         $userLabel = $approved
-            ? ($autoApproveSession ? '批准（本会话自动批准已开启）' : '批准')
+            ? match ($this->approvalTrust->getMode($threadKey)) {
+                CommandApprovalMode::Policy => '批准（按策略执行）',
+                CommandApprovalMode::ForceAuto => '批准（全部自动执行）',
+                default => '批准',
+            }
             : '拒绝';
         if ($emit) {
             $emit('start', [
@@ -263,6 +271,19 @@ final class AiSessionChatService
     public function disableCommandAutoApprove(int $aiSessionId): void
     {
         $this->approvalTrust->disable($this->threadKey($aiSessionId));
+    }
+
+    public function setCommandApprovalMode(int $aiSessionId, CommandApprovalMode $mode): CommandApprovalMode
+    {
+        $threadKey = $this->threadKey($aiSessionId);
+        $this->approvalTrust->setMode($threadKey, $mode);
+
+        return $this->approvalTrust->getMode($threadKey);
+    }
+
+    public function commandApprovalMode(int $aiSessionId): CommandApprovalMode
+    {
+        return $this->approvalTrust->getMode($this->threadKey($aiSessionId));
     }
 
     public function isCommandAutoApproveEnabled(int $aiSessionId): bool

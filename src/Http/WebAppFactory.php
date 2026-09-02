@@ -128,8 +128,10 @@ final class WebAppFactory
         $liveRegistry = new SshLiveRegistry();
         $aiSessionStoragePaths = new AiSessionStoragePaths($env->basePath() . '/storage/neuron/ai-sessions');
         $aiLiveTranscript = new AiSessionLiveTranscript($aiSessionStoragePaths);
-        $sessionBridge = new SshSessionBridge($liveRegistry, $sessionRecorder, $commandPolicyEngine, $commandExecutions);
-        $execBridge = new SshExecBridge($hostService, $hosts, $aiSessionRepo, $sessionService, $liveRegistry, $sessionRecorder, $aiLiveTranscript, $commandPolicyEngine, $commandExecutions);
+        $redisPool = self::redisPool($env);
+        $commandApprovalTrust = new CommandApprovalTrust($redisPool);
+        $sessionBridge = new SshSessionBridge($liveRegistry, $sessionRecorder, $commandPolicyEngine, $commandExecutions, null, $commandApprovalTrust);
+        $execBridge = new SshExecBridge($hostService, $hosts, $aiSessionRepo, $sessionService, $liveRegistry, $sessionRecorder, $aiLiveTranscript, $commandPolicyEngine, $commandExecutions, $commandApprovalTrust);
         $basicAuth = BasicAuthConfig::load($env, $loginRateLimiter, $authSessionConfig)->handler();
         $twoFactorEnabled = $basicAuth !== null;
         $twoFactorService = $twoFactorEnabled
@@ -164,13 +166,11 @@ final class WebAppFactory
         $logManager = configureLogging($env);
         $logger = $logManager->channel();
 
-        $redisPool = self::redisPool($env);
         $chatSettings = new ChatSettings($env, $aiSettingsStore);
         $aiSettingsService = new AiSettingsService($env, $dbConfig, $cipher, $aiSettingsStore, $aiSettingsRepo);
         $aiSettings = new AiSettingsController($aiSettingsService, $audit);
         $chatStreamSession = new ChatStreamSession($redisPool);
         $stoppedTurnWriter = new StoppedTurnWriter();
-        $commandApprovalTrust = new CommandApprovalTrust($redisPool);
         $chatService = new ChatService(
             $chatSettings,
             $sessionBridge,
@@ -296,6 +296,7 @@ final class WebAppFactory
         $app->get('/api/ai/bootstrap', static fn (ServerRequestInterface $request) => $aiChat->bootstrap($request));
         $app->post('/api/ai/chat/stream', static fn (ServerRequestInterface $request) => $aiChat->stream($request));
         $app->post('/api/ai/chat/approval/stream', static fn (ServerRequestInterface $request) => $aiChat->approvalStream($request));
+        $app->post('/api/ai/chat/approval-mode', static fn (ServerRequestInterface $request) => $aiChat->setApprovalMode($request));
         $app->post('/api/ai/chat/auto-approve', static fn (ServerRequestInterface $request) => $aiChat->disableAutoApprove($request));
         $app->post('/api/ai/chat/feedback/stream', static fn (ServerRequestInterface $request) => $aiChat->feedbackStream($request));
         $app->post('/api/ai/chat/stop', static fn (ServerRequestInterface $request) => $aiChat->stop($request));
@@ -308,6 +309,7 @@ final class WebAppFactory
         $app->post('/api/ai/sessions/{id:\d+}/chat/stream', static fn (ServerRequestInterface $request) => $aiSessions->stream($request));
         $app->post('/api/ai/sessions/{id:\d+}/chat/stream/subscribe', static fn (ServerRequestInterface $request) => $aiSessions->subscribeStream($request));
         $app->post('/api/ai/sessions/{id:\d+}/approval/stream', static fn (ServerRequestInterface $request) => $aiSessions->approvalStream($request));
+        $app->post('/api/ai/sessions/{id:\d+}/approval-mode', static fn (ServerRequestInterface $request) => $aiSessions->setApprovalMode($request));
         $app->post('/api/ai/sessions/{id:\d+}/auto-approve', static fn (ServerRequestInterface $request) => $aiSessions->disableAutoApprove($request));
         $app->post('/api/ai/sessions/{id:\d+}/feedback/stream', static fn (ServerRequestInterface $request) => $aiSessions->feedbackStream($request));
         $app->post('/api/ai/sessions/{id:\d+}/stop', static fn (ServerRequestInterface $request) => $aiSessions->stop($request));
