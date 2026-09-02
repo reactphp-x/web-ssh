@@ -41,9 +41,9 @@ final class ApiController
             'username' => $username,
             'auth' => 'basic',
             'two_factor' => [
-                'enabled' => $username !== 'anonymous',
+                'enabled' => $username !== 'anonymous' && $this->twoFactor !== null,
                 'configured' => false,
-                'verified' => (bool) $request->getAttribute('2fa_verified'),
+                'verified' => $this->twoFactor === null || (bool) $request->getAttribute('2fa_verified'),
             ],
         ];
 

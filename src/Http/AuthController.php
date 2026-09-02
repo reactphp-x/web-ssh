@@ -21,6 +21,7 @@ final class AuthController
         private readonly ?string $basicAuthUser = null,
         private readonly ?string $basicAuthPassword = null,
         private readonly ?AuthRateLimiter $loginRateLimiter = null,
+        private readonly bool $twoFactorRequired = true,
     ) {
     }
 
@@ -116,10 +117,14 @@ final class AuthController
 
     public function loginPage(): ResponseInterface
     {
+        $subtitle = $this->twoFactorRequired
+            ? '请输入平台账号密码，登录后还需完成双因子验证。'
+            : '请输入平台账号密码。';
+
         return new Response(
             200,
             ['Content-Type' => 'text/html; charset=utf-8'],
-            <<<'HTML'
+            str_replace('__LOGIN_SUBTITLE__', $subtitle, <<<'HTML'
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -176,7 +181,7 @@ final class AuthController
 <body>
     <div class="card">
         <h1>Web SSH 登录</h1>
-        <p class="sub">请输入平台账号密码，登录后还需完成双因子验证。</p>
+        <p class="sub">__LOGIN_SUBTITLE__</p>
         <form id="login-form">
             <label for="username">用户名</label>
             <input id="username" name="username" autocomplete="username" required>
@@ -232,7 +237,7 @@ final class AuthController
     </script>
 </body>
 </html>
-HTML,
+HTML),
         );
     }
 

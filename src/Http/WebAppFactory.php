@@ -7,6 +7,7 @@ namespace App\Http;
 use App\Config\AuthSessionConfig;
 use App\Bootstrap\DatabaseBootstrap;
 use App\Config\BasicAuthConfig;
+use App\Config\TwoFactorConfig;
 use App\Config\DatabaseConfig;
 use App\Config\SshConfig;
 use App\Database\SqliteClientFactory;
@@ -133,7 +134,8 @@ final class WebAppFactory
         $sessionBridge = new SshSessionBridge($liveRegistry, $sessionRecorder, $commandPolicyEngine, $commandExecutions, null, $commandApprovalTrust);
         $execBridge = new SshExecBridge($hostService, $hosts, $aiSessionRepo, $sessionService, $liveRegistry, $sessionRecorder, $aiLiveTranscript, $commandPolicyEngine, $commandExecutions, $commandApprovalTrust);
         $basicAuth = BasicAuthConfig::load($env, $loginRateLimiter, $authSessionConfig)->handler();
-        $twoFactorEnabled = $basicAuth !== null;
+        $basicAuthEnabled = $basicAuth !== null;
+        $twoFactorEnabled = TwoFactorConfig::load($env, $basicAuthEnabled)->enabled();
         $twoFactorService = $twoFactorEnabled
             ? new TwoFactorService(trim($env->string('BASIC_AUTH_REALM', 'Web SSH')))
             : null;
@@ -153,9 +155,10 @@ final class WebAppFactory
             : null;
         $auth = new AuthController(
             $twoFactorEnabled ? $twoFactorSessions : null,
-            $twoFactorEnabled ? trim($env->nullableString('BASIC_AUTH_USER') ?? '') : null,
-            $twoFactorEnabled ? ($env->nullableString('BASIC_AUTH_PASSWORD') ?? '') : null,
-            $twoFactorEnabled ? $loginRateLimiter : null,
+            $basicAuthEnabled ? trim($env->nullableString('BASIC_AUTH_USER') ?? '') : null,
+            $basicAuthEnabled ? ($env->nullableString('BASIC_AUTH_PASSWORD') ?? '') : null,
+            $basicAuthEnabled ? $loginRateLimiter : null,
+            $twoFactorEnabled,
         );
         $live = new LiveController($liveRegistry);
         $recording = new RecordingController($sessions, $sessionRecorder);
@@ -235,7 +238,9 @@ final class WebAppFactory
 
         if ($basicAuth !== null) {
             $middleware[] = $basicAuth;
-            $middleware[] = new TwoFactorAuthHandler($twoFactorRepo, $twoFactorSessions, [], $authSessionConfig);
+            if ($twoFactorEnabled) {
+                $middleware[] = new TwoFactorAuthHandler($twoFactorRepo, $twoFactorSessions, [], $authSessionConfig);
+            }
         }
 
         $app = new App(...$middleware);
