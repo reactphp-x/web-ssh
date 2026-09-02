@@ -19,7 +19,9 @@ final class Ssh2ClientExecCommandTest extends TestCase
             $command = Ssh2Client::buildExecShellCommand($workspace, 'ls', 120, 40);
 
             self::assertStringContainsString('command -v script', $command);
+            self::assertStringContainsString('script -c : /dev/null', $command);
             self::assertStringContainsString('script -qefc', $command);
+            self::assertStringContainsString('script -qF /dev/null sh -c', $command);
             self::assertStringContainsString('zsh -ic', $command);
             self::assertStringContainsString(
                 base64_encode("stty cols 120 rows 40 2>/dev/null\nexport TERM=\${TERM:-xterm-256color}\nls"),

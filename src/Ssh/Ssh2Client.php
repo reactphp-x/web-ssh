@@ -177,11 +177,15 @@ final class Ssh2Client
             $payload,
             $payload,
         );
-        $withScript = sprintf('script -qefc %s /dev/null', escapeshellarg($shellRun));
-        // Prefer script(1) for a PTY; fall back to the shell directly when util-linux script is unavailable.
+        $shellRunQuoted = escapeshellarg($shellRun);
+        // util-linux: script -qefc CMD /dev/null  |  BSD/macOS: script -qF /dev/null sh -c CMD
+        $withUtilLinuxScript = sprintf('script -qefc %s /dev/null', $shellRunQuoted);
+        $withBsdScript = sprintf('script -qF /dev/null sh -c %s', $shellRunQuoted);
+        // Prefer script(1) for a PTY; detect util-linux (-c) vs BSD (no -c) at runtime.
         $remote = sprintf(
-            'if command -v script >/dev/null 2>&1; then %s; else %s; fi',
-            $withScript,
+            'if command -v script >/dev/null 2>&1; then if script -c : /dev/null 2>/dev/null; then %s; else %s; fi; else %s; fi',
+            $withUtilLinuxScript,
+            $withBsdScript,
             $shellRun,
         );
 
