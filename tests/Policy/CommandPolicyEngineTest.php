@@ -90,7 +90,7 @@ final class CommandPolicyEngineTest extends TestCase
         $decision = $this->evaluate('mkdir /tmp/demo');
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
         $this->assertTrue($decision->approvalRequiredWithTrust(false));
-        $this->assertFalse($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(true));
     }
 
     public function testDenyInteractiveBinary(): void
@@ -105,7 +105,7 @@ final class CommandPolicyEngineTest extends TestCase
         $decision = $this->evaluate($command);
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
         $this->assertTrue($decision->approvalRequiredWithTrust(false));
-        $this->assertFalse($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(true));
         $this->assertContains('mysql', $decision->inspection->binaries());
     }
 
@@ -115,7 +115,7 @@ final class CommandPolicyEngineTest extends TestCase
         $decision = $this->evaluate($command);
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
         $this->assertTrue($decision->approvalRequiredWithTrust(false));
-        $this->assertFalse($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(true));
         $this->assertContains('mysql', $decision->inspection->binaries());
     }
 
@@ -125,7 +125,7 @@ final class CommandPolicyEngineTest extends TestCase
         $decision = $this->evaluate($command);
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
         $this->assertTrue($decision->approvalRequiredWithTrust(false));
-        $this->assertFalse($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(true));
         $this->assertContains('mysql', $decision->inspection->binaries());
     }
 
@@ -156,7 +156,7 @@ final class CommandPolicyEngineTest extends TestCase
         $this->assertFalse(\App\Neuron\Agent\Middleware\RunSshCommandPolicyHelper::terminalToolRequiresApproval([
             'command' => 'ls -la',
         ]));
-        $this->assertFalse(\App\Neuron\Agent\Middleware\RunSshCommandPolicyHelper::terminalToolRequiresApproval([
+        $this->assertTrue(\App\Neuron\Agent\Middleware\RunSshCommandPolicyHelper::terminalToolRequiresApproval([
             'command' => $mysqlCommand,
         ]));
     }
@@ -167,7 +167,7 @@ final class CommandPolicyEngineTest extends TestCase
         $decision = $this->evaluate($command);
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
         $this->assertTrue($decision->approvalRequiredWithTrust(false));
-        $this->assertFalse($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(true));
         $this->assertContains('mysql', $decision->inspection->binaries());
         $this->assertContains('docker', $decision->inspection->binaries());
     }
@@ -183,7 +183,7 @@ final class CommandPolicyEngineTest extends TestCase
         $decision = $this->evaluate('rm -rf /tmp/x');
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
         $this->assertTrue($decision->approvalRequiredWithTrust(false));
-        $this->assertFalse($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(true));
     }
 
     public function testDenyCurlPipeBash(): void
@@ -197,7 +197,7 @@ final class CommandPolicyEngineTest extends TestCase
         $decision = $this->evaluate('systemctl status nginx');
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
         $this->assertTrue($decision->approvalRequiredWithTrust(false));
-        $this->assertFalse($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(true));
     }
 
     public function testSystemctlRestartRequiresApproval(): void
@@ -205,7 +205,7 @@ final class CommandPolicyEngineTest extends TestCase
         $decision = $this->evaluate('systemctl restart nginx');
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
         $this->assertTrue($decision->approvalRequiredWithTrust(false));
-        $this->assertFalse($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(true));
     }
 }
 
@@ -228,7 +228,7 @@ final class TrustIntegrationTest extends TestCase
         $this->assertFalse($decision->approvalRequiredWithTrust(true));
     }
 
-    public function testRequireApprovalRespectsSessionTrust(): void
+    public function testRequireApprovalAlwaysNeedsApprovalEvenWithSessionTrust(): void
     {
         $decision = (new CommandPolicyEngine(
             new BashCommandInspector(),
@@ -236,7 +236,7 @@ final class TrustIntegrationTest extends TestCase
         ))->evaluate('touch /tmp/x', new PolicyContext('u', 1, 1, 'terminal_ai'));
 
         $this->assertTrue($decision->approvalRequiredWithTrust(false));
-        $this->assertFalse($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(true));
     }
 
     public function testDenyIgnoresSessionTrust(): void

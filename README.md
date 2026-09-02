@@ -432,7 +432,7 @@ docker compose up --build
    - **`get_terminal_context`** — 读取终端最近输出（只读，**无需审核**）
    - **`run_ssh_command`** — 提议 shell 命令；经 **命令策略** 判定：
      - **AutoRun**（如 `ls`、`cat`、`ps`、`df`）→ 默认逐条审批；开启会话自动批准后自动执行
-     - **RequireApproval**（如 `rm`、`systemctl`、`mysql`）→ 默认逐条审批；开启会话自动批准后自动执行
+     - **RequireApproval**（如 `rm`、`systemctl`、`mysql`）→ **始终逐条审批**（会话自动批准无效）
      - **Deny**（如 `vim`、`curl | bash`）→ 直接拒绝
      - 可选 `timeout_sec` 指定超时秒数
    - **`ask_user`** — 需求不明确时弹出选项（单选/多选）
@@ -726,10 +726,10 @@ AI 执行 `run_ssh_command` 前，**命令策略引擎**会用 [reactphp-x/unbas
 | 决策 | 策略含义 | 未开启会话自动批准 | 已开启会话自动批准 |
 |---|---|---|---|
 | **AutoRun** | 策略允许自动执行 | **逐条审批** | 自动执行 |
-| **RequireApproval** | 策略标记为需审批 | **逐条审批** | 自动执行 |
+| **RequireApproval** | 策略标记为需审批 | **逐条审批** | **逐条审批** |
 | **Deny** | 拒绝并反馈 AI | 拒绝 | 拒绝 |
 
-**默认（未勾选会话自动批准）优先级最高**：无论策略判定为 AutoRun 还是 RequireApproval，每条 `run_ssh_command` 均须人工批准后才 exec。仅在批准时勾选「开启后会话内后续命令按策略自动执行」，后续才按上表放行。Neuron 中间件与 `SshSessionBridge` / `SshExecBridge` **双层**校验，Bridge 层不可绕过 Deny。
+**默认（未勾选会话自动批准）优先级最高**：AutoRun 与 RequireApproval 均须逐条审批。勾选后，仅 **AutoRun** 类命令可自动执行；**RequireApproval**（如 `mysql`、`rm`）与会话自动批准无关，始终逐条审批。
 
 ### 自动执行：何时发生、风险与建议
 
@@ -740,7 +740,7 @@ AI 执行 `run_ssh_command` 前，**命令策略引擎**会用 [reactphp-x/unbas
 满足以下**全部**条件时，命令不经人工审批直接 exec：
 
 1. **本会话已开启自动批准**（批准某条命令时勾选，或侧栏显示自动执行横幅）
-2. 策略判定为 **AutoRun** 或 **RequireApproval**（Deny 始终拒绝）
+2. 策略判定为 **AutoRun**（RequireApproval 与会话自动批准无关，始终须审批）
 3. 解析出的可执行文件**不在** `deny_binaries` 中
 4. 未命中内置硬拒绝（如 `curl | bash` 管道）
 5. 命令可被 AST **完整解析**（解析失败时保守降级为 RequireApproval）
@@ -788,7 +788,7 @@ AI 执行 `run_ssh_command` 前，**命令策略引擎**会用 [reactphp-x/unbas
 - **默认逐条审批**：新会话未勾选自动批准前，即使 `ls` 也会弹出审批——这是预期行为
 - **更保守**：把更多二进制加入 `require_approval_binaries`（例如全局追加 `"docker"`），开启自动批准后仍标记为需审批
 - **更严格**：将绝不允许 AI 触达的二进制加入 `deny_binaries`（如 `dd`、`reboot` 已在默认拒绝列表）
-- **开启自动批准**：批准任一条命令时勾选「按策略自动执行」，此后 AutoRun / RequireApproval 命令不再逐条弹窗；点「关闭」恢复逐条审批
+- **开启自动批准**：仅 **AutoRun** 类命令（如 `ls`）不再逐条弹窗；**RequireApproval** 仍须每次批准
 
 ### 入口
 
@@ -1033,7 +1033,7 @@ Web SSH 会把 shell 暴露到浏览器，请务必：
 - 妥善保管 `APP_KEY` 与 `.env`，不要提交到版本库
 - AI 批准的命令等同你在服务器上执行 shell，务必审阅后再点批准
 - **命令策略**会拦截 `curl | bash` 等高危命令；`rm` 等写操作需人工审批，但无法覆盖所有误操作
-- 会话「自动批准」开启后，AutoRun / RequireApproval 命令按策略自动执行；**Deny 始终拒绝**
+- 会话「自动批准」开启后，仅 **AutoRun** 命令自动执行；**RequireApproval** 仍须逐条审批；**Deny** 始终拒绝
 - Docker 中 SSH 私钥挂载为只读
 
 <a id="test"></a>

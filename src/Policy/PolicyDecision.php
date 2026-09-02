@@ -25,12 +25,13 @@ final readonly class PolicyDecision
             return false;
         }
 
-        // 未开启会话自动批准：每条命令都须人工审核（优先级高于策略 AutoRun）。
-        if (!$sessionTrustEnabled) {
+        // 策略「需审批」始终逐条审核，会话自动批准不可绕过。
+        if ($this->action === PolicyAction::RequireApproval) {
             return true;
         }
 
-        return false;
+        // AutoRun：未开启会话自动批准时仍须逐条审核。
+        return !$sessionTrustEnabled;
     }
 
     /**

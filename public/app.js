@@ -3793,14 +3793,14 @@ const appOptions = {
                             <div class="actions">
                                 <label class="ai-approval-auto">
                                     <input type="checkbox" v-model="approvalAutoApprove">
-                                    <span>开启后会话内后续命令按策略自动执行（「已拒绝」命令仍不可执行）</span>
+                                    <span>开启后，策略「自动执行」类命令（如 ls）不再逐条审批；「需审批」类（如 mysql、rm）仍须每次批准</span>
                                 </label>
                                 <button type="button" @click="submitApproval(false)" :disabled="busy">拒绝</button>
                                 <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
                             </div>
                         </div>
                         <div v-else-if="commandAutoApprove" class="ai-auto-approve-banner">
-                            <span>本会话已开启自动执行：后续命令按策略放行（「已拒绝」命令仍不可执行）</span>
+                            <span>本会话已开启自动执行：「自动执行」类命令将直接运行；「需审批」类（mysql、rm 等）仍须每次批准</span>
                             <button type="button" @click="disableCommandAutoApprove" :disabled="busy">关闭</button>
                         </div>
                         <div v-if="feedback" class="ai-feedback">
