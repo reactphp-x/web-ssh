@@ -3487,7 +3487,8 @@ const appOptions = {
                 };
 
                 const disableCommandAutoApprove = async () => {
-                    if (!threadReady.value || busy.value) return;
+                    if (!threadReady.value) return;
+                    if (busy.value && !approval.value) return;
                     try {
                         const body = isSessionMode.value
                             ? {}
@@ -3503,7 +3504,7 @@ const appOptions = {
                             errorText.value = json.msg || '关闭自动批准失败';
                             return;
                         }
-                        commandAutoApprove.value = false;
+                        commandAutoApprove.value = !!json.data?.command_auto_approve;
                         approvalAutoApprove.value = false;
                         errorText.value = '';
                     } catch (e) {
@@ -3771,6 +3772,10 @@ const appOptions = {
                             </div>
                         </div>
                         <div v-if="approval" class="ai-approval">
+                            <div v-if="commandAutoApprove" class="ai-auto-approve-banner ai-auto-approve-banner--in-approval">
+                                <span>本会话已开启自动执行：「自动执行」类命令将直接运行；「需审批」类（mysql、rm 等）仍须每次批准</span>
+                                <button type="button" @click="disableCommandAutoApprove">关闭</button>
+                            </div>
                             <h4>待审核命令</h4>
                             <div class="ai-approval-list">
                                 <div
@@ -3791,17 +3796,19 @@ const appOptions = {
                                 </div>
                             </div>
                             <div class="actions">
-                                <label class="ai-approval-auto">
+                                <label v-if="!commandAutoApprove" class="ai-approval-auto">
                                     <input type="checkbox" v-model="approvalAutoApprove">
                                     <span>开启后，策略「自动执行」类命令（如 ls）不再逐条审批；「需审批」类（如 mysql、rm）仍须每次批准</span>
                                 </label>
-                                <button type="button" @click="submitApproval(false)" :disabled="busy">拒绝</button>
-                                <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
+                                <div class="ai-panel-action-buttons">
+                                    <button type="button" @click="submitApproval(false)" :disabled="busy">拒绝</button>
+                                    <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
+                                </div>
                             </div>
                         </div>
                         <div v-else-if="commandAutoApprove" class="ai-auto-approve-banner">
                             <span>本会话已开启自动执行：「自动执行」类命令将直接运行；「需审批」类（mysql、rm 等）仍须每次批准</span>
-                            <button type="button" @click="disableCommandAutoApprove" :disabled="busy">关闭</button>
+                            <button type="button" @click="disableCommandAutoApprove">关闭</button>
                         </div>
                         <div v-if="feedback" class="ai-feedback">
                             <h4>{{ feedback.message || '请回答' }}</h4>
@@ -3868,8 +3875,14 @@ const appOptions = {
                             </div>
                             </div>
                             <div class="actions">
-                                <button type="button" @click="skipFeedback" :disabled="busy">跳过</button>
-                                <button class="primary" type="button" @click="submitFeedback" :disabled="busy">提交</button>
+                                <label v-if="!commandAutoApprove" class="ai-approval-auto">
+                                    <input type="checkbox" v-model="approvalAutoApprove">
+                                    <span>开启后，策略「自动执行」类命令（如 ls）不再逐条审批；「需审批」类（如 mysql、rm）仍须每次批准</span>
+                                </label>
+                                <div class="ai-panel-action-buttons">
+                                    <button type="button" @click="skipFeedback" :disabled="busy">跳过</button>
+                                    <button class="primary" type="button" @click="submitFeedback" :disabled="busy">提交</button>
+                                </div>
                             </div>
                         </div>
                         <div v-if="!approval && !feedback" class="ai-composer">

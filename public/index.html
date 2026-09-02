@@ -1738,26 +1738,38 @@
             margin: 0;
         }
 
-        .ai-approval .actions {
+        .ai-approval .actions,
+        .ai-feedback .actions {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
+            justify-content: space-between;
             gap: 8px;
             flex-shrink: 0;
-            justify-content: space-between;
             padding-top: 8px;
             border-top: 1px solid #2a2f3a;
             background: #151821;
         }
 
+        .ai-panel-action-buttons {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+
         .ai-approval-auto {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             gap: 6px;
             font-size: 12px;
             color: #b8c0cc;
             margin-right: auto;
+            flex: 1 1 220px;
+            min-width: 0;
+            max-width: calc(100% - 180px);
             cursor: pointer;
+            line-height: 1.4;
         }
 
         .ai-approval-auto input {
@@ -1779,6 +1791,10 @@
 
         .ai-auto-approve-banner button {
             flex-shrink: 0;
+        }
+
+        .ai-approval > .ai-auto-approve-banner--in-approval {
+            margin: -10px -12px 10px;
         }
 
         .ai-field {
