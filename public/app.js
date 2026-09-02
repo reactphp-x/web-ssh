@@ -3793,14 +3793,14 @@ const appOptions = {
                             <div class="actions">
                                 <label class="ai-approval-auto">
                                     <input type="checkbox" v-model="approvalAutoApprove">
-                                    <span>本会话后续需审批命令自动批准（策略「需审批」与「已拒绝」命令不受此选项影响）</span>
+                                    <span>开启后会话内后续命令按策略自动执行（「已拒绝」命令仍不可执行）</span>
                                 </label>
                                 <button type="button" @click="submitApproval(false)" :disabled="busy">拒绝</button>
                                 <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
                             </div>
                         </div>
                         <div v-else-if="commandAutoApprove" class="ai-auto-approve-banner">
-                            <span>本会话后续需审批 SSH 命令将自动批准（策略「需审批」与「已拒绝」命令不受此选项影响）</span>
+                            <span>本会话已开启自动执行：后续命令按策略放行（「已拒绝」命令仍不可执行）</span>
                             <button type="button" @click="disableCommandAutoApprove" :disabled="busy">关闭</button>
                         </div>
                         <div v-if="feedback" class="ai-feedback">

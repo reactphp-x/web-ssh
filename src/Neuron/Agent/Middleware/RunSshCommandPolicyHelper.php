@@ -97,8 +97,7 @@ final class RunSshCommandPolicyHelper
                 'error' => $decision->reason,
                 'policy' => $decision->toUiPayload(),
             ]))),
-            PolicyAction::AutoRun => $tool->setCallable(new RunSshCommandExecutorHandler($tool->getConnId())),
-            PolicyAction::RequireApproval => $this->assignTerminalApprovalHandler($tool, $decision),
+            PolicyAction::AutoRun, PolicyAction::RequireApproval => $this->assignTerminalExecutionHandler($tool, $decision),
         };
     }
 
@@ -110,10 +109,7 @@ final class RunSshCommandPolicyHelper
                 'error' => $decision->reason,
                 'policy' => $decision->toUiPayload(),
             ]))),
-            PolicyAction::AutoRun => $tool->setCallable(
-                new OrchestratorRunSshCommandExecutorHandler($tool->getAiSessionId()),
-            ),
-            PolicyAction::RequireApproval => $this->assignOrchestratorApprovalHandler($tool, $decision),
+            PolicyAction::AutoRun, PolicyAction::RequireApproval => $this->assignOrchestratorExecutionHandler($tool, $decision),
         };
     }
 
@@ -143,10 +139,6 @@ final class RunSshCommandPolicyHelper
     {
         if ($decision === null) {
             return true;
-        }
-
-        if ($decision->action === PolicyAction::AutoRun || $decision->action === PolicyAction::Deny) {
-            return false;
         }
 
         return $decision->approvalRequiredWithTrust($sessionTrustEnabled);
@@ -202,7 +194,7 @@ final class RunSshCommandPolicyHelper
         return $this->policyEngine->evaluate($command, $this->orchestratorContext($hostId));
     }
 
-    private function assignTerminalApprovalHandler(RunSshCommandTool $tool, PolicyDecision $decision): void
+    private function assignTerminalExecutionHandler(RunSshCommandTool $tool, PolicyDecision $decision): void
     {
         if ($decision->approvalRequiredWithTrust(SshToolContext::sessionTrustEnabled())) {
             $tool->setCallable(new RunSshCommandPendingHandler());
@@ -211,7 +203,7 @@ final class RunSshCommandPolicyHelper
         }
     }
 
-    private function assignOrchestratorApprovalHandler(
+    private function assignOrchestratorExecutionHandler(
         OrchestratorRunSshCommandTool $tool,
         PolicyDecision $decision,
     ): void {

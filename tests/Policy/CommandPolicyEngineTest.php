@@ -89,7 +89,8 @@ final class CommandPolicyEngineTest extends TestCase
     {
         $decision = $this->evaluate('mkdir /tmp/demo');
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
-        $this->assertTrue($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(false));
+        $this->assertFalse($decision->approvalRequiredWithTrust(true));
     }
 
     public function testDenyInteractiveBinary(): void
@@ -103,7 +104,8 @@ final class CommandPolicyEngineTest extends TestCase
         $command = 'mysql -e "SHOW DATABASES;" 2>&1 || sudo -n mysql -e "SHOW DATABASES;" 2>&1';
         $decision = $this->evaluate($command);
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
-        $this->assertTrue($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(false));
+        $this->assertFalse($decision->approvalRequiredWithTrust(true));
         $this->assertContains('mysql', $decision->inspection->binaries());
     }
 
@@ -112,7 +114,8 @@ final class CommandPolicyEngineTest extends TestCase
         $command = "MYSQL_PWD='123456' mysql -h127.0.0.1 -P3306 -uroot --protocol=tcp -e \"SELECT VERSION();\" 2>&1";
         $decision = $this->evaluate($command);
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
-        $this->assertTrue($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(false));
+        $this->assertFalse($decision->approvalRequiredWithTrust(true));
         $this->assertContains('mysql', $decision->inspection->binaries());
     }
 
@@ -121,11 +124,12 @@ final class CommandPolicyEngineTest extends TestCase
         $command = 'env MYSQL_PWD=123456 mysql -e "SELECT VERSION();"';
         $decision = $this->evaluate($command);
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
-        $this->assertTrue($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(false));
+        $this->assertFalse($decision->approvalRequiredWithTrust(true));
         $this->assertContains('mysql', $decision->inspection->binaries());
     }
 
-    public function testTerminalToolRequiresApprovalIgnoresStaleAutoRunDecision(): void
+    public function testTerminalToolRequiresApprovalWithoutSessionTrust(): void
     {
         PolicyRuleLoader::resetDefaultsCache();
         PolicyDecisionStore::reset();
@@ -134,18 +138,27 @@ final class CommandPolicyEngineTest extends TestCase
             new PolicyRuleLoader(null, dirname(__DIR__, 2) . '/config/command_policy.defaults.php'),
         );
         $trust = new \App\Chat\CommandApprovalTrust(null);
-        $trust->enable('conn1');
         $bridge = new \App\Ssh\SshSessionBridge(null, null, $engine);
         \App\Ssh\SshToolContext::configure($bridge, 30, 300, 'conn1', $trust, 'u', $engine);
+
+        $this->assertTrue(\App\Neuron\Agent\Middleware\RunSshCommandPolicyHelper::terminalToolRequiresApproval([
+            'command' => 'ls -la',
+        ]));
 
         $mysqlCommand = "MYSQL_PWD='123456' mysql -e 'select 1'";
         $this->assertTrue(\App\Neuron\Agent\Middleware\RunSshCommandPolicyHelper::terminalToolRequiresApproval([
             'command' => $mysqlCommand,
         ]));
 
-        $decision = PolicyDecisionStore::get('conn1', $mysqlCommand);
-        $this->assertNotNull($decision);
-        $this->assertTrue($decision->approvalRequiredWithTrust(true));
+        $trust->enable('conn1');
+        \App\Ssh\SshToolContext::configure($bridge, 30, 300, 'conn1', $trust, 'u', $engine);
+
+        $this->assertFalse(\App\Neuron\Agent\Middleware\RunSshCommandPolicyHelper::terminalToolRequiresApproval([
+            'command' => 'ls -la',
+        ]));
+        $this->assertFalse(\App\Neuron\Agent\Middleware\RunSshCommandPolicyHelper::terminalToolRequiresApproval([
+            'command' => $mysqlCommand,
+        ]));
     }
 
     public function testDockerExecMysqlRequiresApprovalEvenWithTrust(): void
@@ -153,7 +166,8 @@ final class CommandPolicyEngineTest extends TestCase
         $command = 'docker exec mysql sh -c \'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT 1;"\' 2>&1';
         $decision = $this->evaluate($command);
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
-        $this->assertTrue($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(false));
+        $this->assertFalse($decision->approvalRequiredWithTrust(true));
         $this->assertContains('mysql', $decision->inspection->binaries());
         $this->assertContains('docker', $decision->inspection->binaries());
     }
@@ -168,7 +182,8 @@ final class CommandPolicyEngineTest extends TestCase
     {
         $decision = $this->evaluate('rm -rf /tmp/x');
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
-        $this->assertTrue($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(false));
+        $this->assertFalse($decision->approvalRequiredWithTrust(true));
     }
 
     public function testDenyCurlPipeBash(): void
@@ -181,14 +196,16 @@ final class CommandPolicyEngineTest extends TestCase
     {
         $decision = $this->evaluate('systemctl status nginx');
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
-        $this->assertTrue($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(false));
+        $this->assertFalse($decision->approvalRequiredWithTrust(true));
     }
 
     public function testSystemctlRestartRequiresApproval(): void
     {
         $decision = $this->evaluate('systemctl restart nginx');
         $this->assertSame(PolicyAction::RequireApproval, $decision->action);
-        $this->assertTrue($decision->approvalRequiredWithTrust(true));
+        $this->assertTrue($decision->approvalRequiredWithTrust(false));
+        $this->assertFalse($decision->approvalRequiredWithTrust(true));
     }
 }
 
@@ -199,18 +216,19 @@ final class TrustIntegrationTest extends TestCase
         PolicyRuleLoader::resetDefaultsCache();
     }
 
-    public function testAutoRunIgnoresSessionTrust(): void
+    public function testAutoRunRequiresApprovalWithoutSessionTrust(): void
     {
         $decision = (new CommandPolicyEngine(
             new BashCommandInspector(),
             new PolicyRuleLoader(null, dirname(__DIR__, 2) . '/config/command_policy.defaults.php'),
         ))->evaluate('ls', new PolicyContext('u', 1, 1, 'terminal_ai'));
 
-        $this->assertFalse($decision->approvalRequiredWithTrust(false));
+        $this->assertSame(PolicyAction::AutoRun, $decision->action);
+        $this->assertTrue($decision->approvalRequiredWithTrust(false));
         $this->assertFalse($decision->approvalRequiredWithTrust(true));
     }
 
-    public function testRequireApprovalIgnoresSessionTrust(): void
+    public function testRequireApprovalRespectsSessionTrust(): void
     {
         $decision = (new CommandPolicyEngine(
             new BashCommandInspector(),
@@ -218,7 +236,7 @@ final class TrustIntegrationTest extends TestCase
         ))->evaluate('touch /tmp/x', new PolicyContext('u', 1, 1, 'terminal_ai'));
 
         $this->assertTrue($decision->approvalRequiredWithTrust(false));
-        $this->assertTrue($decision->approvalRequiredWithTrust(true));
+        $this->assertFalse($decision->approvalRequiredWithTrust(true));
     }
 
     public function testDenyIgnoresSessionTrust(): void

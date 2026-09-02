@@ -21,7 +21,16 @@ final readonly class PolicyDecision
 
     public function approvalRequiredWithTrust(bool $sessionTrustEnabled): bool
     {
-        return $this->action === PolicyAction::RequireApproval;
+        if ($this->action === PolicyAction::Deny) {
+            return false;
+        }
+
+        // 未开启会话自动批准：每条命令都须人工审核（优先级高于策略 AutoRun）。
+        if (!$sessionTrustEnabled) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
