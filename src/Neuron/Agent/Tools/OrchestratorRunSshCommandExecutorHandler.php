@@ -20,6 +20,8 @@ final class OrchestratorRunSshCommandExecutorHandler
      */
     public function __invoke(int $host_id, string $command, string $reason, ?int $timeout_sec = null): string
     {
+        OrchestratorToolContext::useSession($this->aiSessionId);
+
         $timeoutSec = CommandTimeoutResolver::resolve(
             $timeout_sec,
             OrchestratorToolContext::commandTimeout(),

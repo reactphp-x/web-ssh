@@ -13,12 +13,17 @@ final class ListHostsTool extends Tool
 {
     public const NAME = 'list_hosts';
 
-    public function __construct()
+    public function __construct(private readonly int $aiSessionId)
     {
         parent::__construct(
             self::NAME,
             '列出平台已保存的主机，用于选择目标服务器。只读，无需用户批准。',
         );
+    }
+
+    public function getAiSessionId(): int
+    {
+        return $this->aiSessionId;
     }
 
     protected function properties(): array
@@ -31,6 +36,7 @@ final class ListHostsTool extends Tool
      */
     public function __invoke(): string
     {
+        OrchestratorToolContext::useSession($this->aiSessionId);
         $hosts = await(OrchestratorToolContext::hosts()->listOptions());
 
         return ToolJson::encode([

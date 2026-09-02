@@ -18,6 +18,8 @@ final class RunSshCommandRunner
      */
     public static function run(string $connId, string $command, string $reason, int $timeoutSec): array
     {
+        SshToolContext::use($connId);
+
         $command = trim($command);
         $reason = trim($reason);
         if ($command === '') {

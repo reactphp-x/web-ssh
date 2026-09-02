@@ -217,6 +217,10 @@ final class SshTerminalGateway
                             $session,
                             $target,
                             $sessionId,
+                            (int) $pending['host_id'],
+                            isset($pending['host']['group_id']) && is_numeric($pending['host']['group_id'])
+                                ? (int) $pending['host']['group_id']
+                                : null,
                         );
 
                         $session->connect(

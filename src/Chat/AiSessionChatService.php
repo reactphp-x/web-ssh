@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Chat;
 
+use App\Neuron\Agent\Middleware\RunSshCommandPolicyHelper;
 use App\Neuron\HttpClient\HttpStreamScope;
 use App\Neuron\HttpClient\ReactHttpClient;
 use App\Neuron\OrchestratorAgent;
@@ -12,6 +13,7 @@ use App\Neuron\Tools\ListHostsTool;
 use App\Neuron\Tools\OrchestratorRunSshCommandTool;
 use App\Neuron\Workflow\FeedbackField;
 use App\Neuron\Workflow\FeedbackRequest;
+use App\Policy\CommandPolicyEngine;
 use App\Repository\AiSessionRepository;
 use App\Repository\HostRepository;
 use App\Ssh\OrchestratorToolContext;
@@ -44,6 +46,7 @@ final class AiSessionChatService
         private readonly StoppedTurnWriter $stoppedTurns,
         private readonly CommandApprovalTrust $approvalTrust,
         private readonly LoggerInterface $logger,
+        private readonly ?CommandPolicyEngine $policyEngine = null,
     ) {
     }
 
@@ -307,7 +310,7 @@ final class AiSessionChatService
             return null;
         }
 
-        return $this->serializeApprovalRequest($request, $this->workflowResumeToken($aiSessionId));
+        return $this->serializeApprovalRequest($request, $this->workflowResumeToken($aiSessionId), $this->threadKey($aiSessionId));
     }
 
     /**
@@ -524,7 +527,7 @@ final class AiSessionChatService
             $this->persistAssistantPartial($aiSessionId, $partialContent);
         }
 
-        $approval = $this->serializeApprovalRequest($request, $interrupt->getWorkflowId());
+        $approval = $this->serializeApprovalRequest($request, $interrupt->getWorkflowId(), $this->threadKey($aiSessionId));
         $content = $this->interruptContent(trim($partialContent), $this->approvalHint($approval));
         if ($emit) {
             ChatTokenUsage::emit($this->fileHistory($aiSessionId), $this->settings, $emit);
@@ -567,7 +570,7 @@ final class AiSessionChatService
     /**
      * @return array<string, mixed>
      */
-    private function serializeApprovalRequest(ApprovalRequest $request, string $resumeToken): array
+    private function serializeApprovalRequest(ApprovalRequest $request, string $resumeToken, string $threadKey): array
     {
         $actions = [];
         foreach ($request->getActions() as $action) {
@@ -577,14 +580,18 @@ final class AiSessionChatService
             $label = $this->toolLabel($action->name);
             $rawDescription = (string) $action->description;
             $enriched = $this->enrichActionDescription($action->name, $rawDescription);
-            $actions[] = [
-                'id' => $action->id,
-                'name' => $action->name,
-                'label' => $label,
-                'description' => $enriched['description'],
-                'host' => $enriched['host'],
-                'detail' => $this->actionDetail($label, $enriched['description']),
-            ];
+            $actions[] = RunSshCommandPolicyHelper::enrichApprovalAction(
+                $threadKey,
+                RunSshCommandPolicyHelper::extractCommandFromDescription($rawDescription),
+                [
+                    'id' => $action->id,
+                    'name' => $action->name,
+                    'label' => $label,
+                    'description' => $enriched['description'],
+                    'host' => $enriched['host'],
+                    'detail' => $this->actionDetail($label, $enriched['description']),
+                ],
+            );
         }
 
         return [
@@ -826,6 +833,7 @@ final class AiSessionChatService
             $this->settings->commandTimeout(),
             $this->settings->commandTimeoutMax(),
             $this->approvalTrust,
+            $this->policyEngine,
         );
 
         $http = $this->httpClient;

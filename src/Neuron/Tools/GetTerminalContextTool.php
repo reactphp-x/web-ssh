@@ -33,6 +33,8 @@ final class GetTerminalContextTool extends Tool
      */
     public function __invoke(?int $lines = null): string
     {
+        SshToolContext::use($this->connId);
+
         $maxChars = max(500, min(8000, $lines ?? 4000));
 
         return ToolJson::encode([

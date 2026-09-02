@@ -14,6 +14,7 @@ use App\Http\JsonErrorHandler;
 use App\Middleware\TwoFactorAuthHandler;
 use App\Recording\SessionRecordingConfig;
 use App\Recording\SessionRecorder;
+use App\Http\CommandPolicyController;
 use App\Http\AiSessionController;
 use App\Http\AiSettingsController;
 use App\Repository\AiSessionRepository;
@@ -88,6 +89,17 @@ final class WebAppFactory
         $sessions = new SessionRepository($db);
         $aiSessionRepo = new AiSessionRepository($db);
         $auditLogs = new AuditLogRepository($db);
+        $commandPolicyRepo = new \App\Repository\CommandPolicyRepository($db);
+        $commandExecutions = new \App\Repository\CommandExecutionRepository($db);
+        $policyRuleLoader = new \App\Policy\PolicyRuleLoader(
+            $commandPolicyRepo,
+            $env->basePath() . '/config/command_policy.defaults.php',
+        );
+        $commandPolicyEngine = new \App\Policy\CommandPolicyEngine(
+            new \App\Policy\BashCommandInspector(),
+            $policyRuleLoader,
+        );
+        $commandPolicyService = new \App\Service\CommandPolicyService($commandPolicyRepo, $policyRuleLoader);
         $aiSettingsRepo = new AiSettingsRepository($db);
         $aiSettingsStore = new AiSettingsStore($dbConfig, $cipher);
         (new AiSettingsEnvImporter($env, $dbConfig, $cipher))->importIfEmpty();
@@ -108,6 +120,7 @@ final class WebAppFactory
         Ssh2Client::setConnectTimeout($sshConfig->connectTimeout());
         $hostService = new HostService($hosts, $cipher, $sshConfig);
         $audit = new AuditService($auditLogs);
+        $commandPolicy = new CommandPolicyController($commandPolicyService, $audit);
         $sessionService = new SessionService($sessions);
         $probe = new SshProbeService();
         $recordingConfig = SessionRecordingConfig::load($env);
@@ -115,8 +128,8 @@ final class WebAppFactory
         $liveRegistry = new SshLiveRegistry();
         $aiSessionStoragePaths = new AiSessionStoragePaths($env->basePath() . '/storage/neuron/ai-sessions');
         $aiLiveTranscript = new AiSessionLiveTranscript($aiSessionStoragePaths);
-        $sessionBridge = new SshSessionBridge($liveRegistry, $sessionRecorder);
-        $execBridge = new SshExecBridge($hostService, $hosts, $aiSessionRepo, $sessionService, $liveRegistry, $sessionRecorder, $aiLiveTranscript);
+        $sessionBridge = new SshSessionBridge($liveRegistry, $sessionRecorder, $commandPolicyEngine, $commandExecutions);
+        $execBridge = new SshExecBridge($hostService, $hosts, $aiSessionRepo, $sessionService, $liveRegistry, $sessionRecorder, $aiLiveTranscript, $commandPolicyEngine, $commandExecutions);
         $basicAuth = BasicAuthConfig::load($env, $loginRateLimiter, $authSessionConfig)->handler();
         $twoFactorEnabled = $basicAuth !== null;
         $twoFactorService = $twoFactorEnabled
@@ -166,6 +179,7 @@ final class WebAppFactory
             $chatStreamSession,
             $commandApprovalTrust,
             $logger,
+            $commandPolicyEngine,
         );
         $aiChat = new AiChatController(
             $chatService,
@@ -188,6 +202,7 @@ final class WebAppFactory
             $stoppedTurnWriter,
             $commandApprovalTrust,
             $logger,
+            $commandPolicyEngine,
         );
         $aiSessions = new AiSessionController(
             $aiSessionChat,
@@ -270,6 +285,10 @@ final class WebAppFactory
         $app->post('/api/settings/ai/profiles/{id:\d+}/select', static fn (ServerRequestInterface $request) => $aiSettings->select($request));
         $app->post('/api/settings/ai/test', static fn (ServerRequestInterface $request) => $aiSettings->test($request));
         $app->post('/api/settings/ai/models', static fn (ServerRequestInterface $request) => $aiSettings->models($request));
+
+        $app->get('/api/settings/command-policy', static fn () => $commandPolicy->show());
+        $app->put('/api/settings/command-policy', static fn (ServerRequestInterface $request) => $commandPolicy->save($request));
+        $app->delete('/api/settings/command-policy/{id:\d+}', static fn (ServerRequestInterface $request) => $commandPolicy->delete($request));
 
         $app->get('/api/live/sessions', static fn (ServerRequestInterface $request) => $live->listSessions($request));
         $app->get('/api/live/sessions/{id:[a-f0-9]+}/stream', static fn (ServerRequestInterface $request) => $live->streamSession($request));

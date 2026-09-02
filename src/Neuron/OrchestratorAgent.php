@@ -118,19 +118,9 @@ final class OrchestratorAgent extends Agent
 
     protected function tools(): array
     {
-        OrchestratorToolContext::configure(
-            $this->requireExecBridge(),
-            $this->requireHosts(),
-            $this->aiSessionId,
-            $this->username,
-            $this->requireSettings()->commandTimeout(),
-            $this->requireSettings()->commandTimeoutMax(),
-            $this->requireApprovalTrust(),
-        );
-
         $tools = [
-            new ListHostsTool(),
-            new GetCommandContextTool(),
+            new ListHostsTool($this->aiSessionId),
+            new GetCommandContextTool($this->aiSessionId),
             new OrchestratorRunSshCommandTool($this->aiSessionId),
         ];
         if ($this->allowFeedback) {

@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "66a976a35a70e7d7bf0a408bde6a9e3f",
+    "content-hash": "add876dacad297bf679ee5d59451d68b",
     "packages": [
         {
             "name": "bacon/bacon-qr-code",
@@ -3032,6 +3032,55 @@
                 "source": "https://github.com/reactphp-x/tunnel-stream/tree/v1.0.0"
             },
             "time": "2026-04-18T04:11:30+00:00"
+        },
+        {
+            "name": "reactphp-x/unbash",
+            "version": "v1.0.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/reactphp-x/unbash.git",
+                "reference": "40b2c09d456aacfa88de8d6146a0ed7e1cf654a2"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/reactphp-x/unbash/zipball/40b2c09d456aacfa88de8d6146a0ed7e1cf654a2",
+                "reference": "40b2c09d456aacfa88de8d6146a0ed7e1cf654a2",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=8.1"
+            },
+            "require-dev": {
+                "phpunit/phpunit": "^10.5"
+            },
+            "type": "library",
+            "autoload": {
+                "files": [
+                    "src/functions.php"
+                ],
+                "psr-4": {
+                    "ReactphpX\\Unbash\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "description": "Fast, zero-dependency Bash parser for PHP - turns Bash source into a typed, source-positioned AST without executing it. A PHP port of webpro-nl/unbash.",
+            "keywords": [
+                "ast",
+                "bash",
+                "lexer",
+                "parser",
+                "posix",
+                "shell",
+                "tokenizer"
+            ],
+            "support": {
+                "issues": "https://github.com/reactphp-x/unbash/issues",
+                "source": "https://github.com/reactphp-x/unbash/tree/v1.0.0"
+            },
+            "time": "2026-09-02T13:18:38+00:00"
         },
         {
             "name": "reactphp-x/websocket-group",

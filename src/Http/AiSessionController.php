@@ -18,6 +18,7 @@ use App\Repository\AiSessionRepository;
 use App\Service\AuditService;
 use App\Ssh\SshExecBridge;
 use App\Ssh\SshLiveRegistry;
+use App\Ssh\OrchestratorToolContext;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Log\LoggerInterface;
@@ -497,7 +498,7 @@ final class AiSessionController
         $this->streamSession->begin($lockKey, $threadKey, $userMessage);
         $this->streamSession->registerScope($lockKey, $scope);
 
-        Loop::futureTick(async(function () use ($through, $scope, $lockKey, $run): void {
+        Loop::futureTick(async(function () use ($through, $scope, $lockKey, $run, $aiSessionId): void {
             $emit = function (string $event, array $data) use ($through, $lockKey): void {
                 $this->streamSession->append($lockKey, $event, $data);
                 if ($through->isWritable()) {
@@ -528,6 +529,7 @@ final class AiSessionController
             } finally {
                 $this->streamSession->finish($lockKey);
                 $this->locks->release($lockKey);
+                OrchestratorToolContext::releaseSession($aiSessionId);
                 Sse::end($through);
             }
         }));

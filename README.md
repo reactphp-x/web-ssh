@@ -2,7 +2,7 @@
 
 **带 AI 的 Web SSH 运维平台** — 用自然语言描述任务，AI 提议命令、你审核批准、自动在远端 exec 并继续推理；同时提供多标签终端、跨主机编排、现场查看与会话回放。
 
-> 在侧边栏 **AI 设置**（`#/settings/ai`）中配置 Provider 与 API Key 并启用后，**AI 助手**（单主机）与 **AI 编排**（跨主机）即可使用。底层仍是自托管 Web SSH 网关：凭据加密、跳板机、审计与 2FA。
+> 在侧边栏 **AI 设置**（`#/settings/ai`）中配置 Provider 与 API Key 并启用后，**AI 助手**（单主机）与 **AI 编排**（跨主机）即可使用。命令执行受 **命令策略**（`#/settings/command-policy`）约束：只读命令自动执行，写操作需审批，危险命令直接拒绝。底层仍是自托管 Web SSH 网关：凭据加密、跳板机、审计与 2FA。
 
 ## 目录
 
@@ -10,6 +10,7 @@
 - [AI 编排](#ai-orchestration)
 - [AI 助手（终端页）](#ai-assistant)
 - [AI 配置（Web 面板）](#ai-config)
+- [命令策略（Web 面板）](#command-policy)
 - [快速上手](#quick-start)
 - [解决的问题](#problems)
 - [功能概览](#features)
@@ -37,12 +38,14 @@
 | 能力 | 一句话 |
 |---|---|
 | **自然语言运维** | 描述「查磁盘、看 nginx 日志、重启服务」等任务，AI 拆解步骤并给出可执行命令 |
-| **人工批准闸门** | 写操作必须点 **批准** 才执行；只读工具（列主机、读上下文）自动运行 |
+| **人工批准闸门** | 写操作必须点 **批准** 才执行；**只读命令**由策略引擎自动放行；危险命令直接拒绝 |
+| **命令策略引擎** | 基于 [unbash](https://github.com/reactphp-x/unbash) 静态解析 Bash AST，区分只读 / 写操作 / 拒绝；与会话「自动批准」分层配合 |
 | **双模式覆盖** | **AI 助手** 绑定当前终端主机；**AI 编排** 跨多台机器自动选机、分段执行 |
 | **exec 与 PTY 分离** | AI 走独立 SSH exec，输出进 **现场** 流（`[AI]` 标记），不污染交互终端 |
 | **可审计可回放** | 命令批准/拒绝写入操作日志；每次 exec 录像 + 现场 transcript，刷新可恢复 |
 | **工具链透明** | 消息 timeline 与工具卡片交错展示，每次 `list_hosts` / `run_ssh_command` 可展开查看 |
 | **Web 面板配置 AI** | 侧边栏 **AI 设置**：多套 Provider 配置、启用开关、模型列表拉取、连接测试，密钥加密存 SQLite |
+| **Web 面板配置策略** | 侧边栏 **命令策略**：查看内置规则、按全局/主机/分组添加覆盖策略 |
 | **上下文与缓存用量** | 对话底部实时显示当前上下文占用、本轮缓存与本 session 累计消耗（见 [聊天底部用量条](#ai-token-usage)） |
 
 **典型用法**
@@ -95,8 +98,9 @@ AI：读取输出 → 继续下一条命令或切换主机 → 汇总结论
 | 模块 | 说明 |
 |---|---|
 | **AI 编排** | 跨主机会话（`#/ai`）；`list_hosts` 选机、`run_ssh_command` 分段 exec；**无需先开终端** |
-| **AI 助手** | 终端页侧栏；绑定当前主机 `conn_id`；自然语言任务 + **批准后才执行** |
-| **命令审核** | 写操作暂停等待批准；批准/拒绝记入操作日志 |
+| **AI 助手** | 终端页侧栏；绑定当前主机 `conn_id`；自然语言任务 + **策略判定后批准/自动执行** |
+| **命令审核** | 写操作暂停等待批准；只读命令自动执行；危险命令拒绝；批准/拒绝与执行记录可审计 |
+| **命令策略** | 内置 `deny_binaries` / `require_approval_binaries` + 数据库覆盖；Neuron 中间件 + SSH Bridge 双层门禁 |
 | **工具 timeline** | 聊天与工具调用交错展示，默认折叠可展开 |
 | **现场** | AI 命令输出实时 SSE + 持久化 transcript（编排）；含 `[AI]` 前缀标记 |
 | **AI 会话历史** | 继续对话、查看现场、按分段回放录像 |
@@ -111,7 +115,7 @@ AI：读取输出 → 继续下一条命令或切换主机 → 汇总结论
 | **实时现场** | `#/live` 多路 SSE 旁路监控进行中的 SSH 连接 |
 | **会话记录** | 连接起止、状态、耗时；asciinema cast（`storage/recordings/Y/m/d/`） |
 | **现场查看 / 回放** | 历史输出滚动查看或按时间轴播放录像 |
-| **操作审计** | 主机增删改、AI 命令批准/拒绝等 |
+| **操作审计** | 主机增删改、AI 命令批准/拒绝、命令策略变更、命令执行记录等 |
 | **登录鉴权** | HTTP Basic Auth + TOTP 双因子 |
 
 <a id="architecture-diagrams"></a>
@@ -138,6 +142,7 @@ flowchart TB
         GW["SshTerminalGateway"]
         BR["SshSessionBridge<br/>conn_id"]
         EB["SshExecBridge<br/>ai_session_id"]
+        POL["CommandPolicyEngine<br/>unbash AST"]
         LIVE["SshLiveRegistry<br/>SSE 旁路"]
         TX["AiSessionLiveTranscript<br/>现场持久化"]
         AG1["SshAgent<br/>终端 AI"]
@@ -162,6 +167,10 @@ flowchart TB
     GW <-->|PTY 交互 shell| SSH
     AG1 --> BR
     AG2 --> EB
+    AG1 --> POL
+    AG2 --> POL
+    POL --> BR
+    POL --> EB
     BR -->|exec| SSH
     EB -->|exec 分段| SSH
     BR --> LIVE
@@ -200,12 +209,13 @@ flowchart TB
     FIELD2 --- AI2
 ```
 
-**终端 AI 工作流** — 绑定 `conn_id`；只读工具自动执行，`run_ssh_command` 须人工批准：
+**终端 AI 工作流** — 绑定 `conn_id`；只读 Neuron 工具自动执行；`run_ssh_command` 经 **命令策略** 判定为只读则自动 exec，写操作须人工批准，危险命令直接拒绝：
 
 ```mermaid
 sequenceDiagram
     actor U as 用户
     participant AI as SshAgent
+    participant P as CommandPolicyEngine
     participant S as SshSessionBridge
     participant H as 远端主机
 
@@ -214,21 +224,23 @@ sequenceDiagram
         AI->>S: get_terminal_context
         S-->>AI: 终端最近输出
     end
-    opt 需求不明确
-        AI->>U: ask_user
-        U->>AI: 提交 / 跳过
-    end
-    AI->>U: 待审核命令
-    alt 批准
-        U->>AI: 批准
+    AI->>P: 解析并评估 run_ssh_command
+    alt 只读 AutoRun
         AI->>S: run_ssh_command
         S->>H: SSH exec
-        H-->>S: stdout / stderr
-        S-->>AI: 命令结果
-        Note over S: 输出写入现场 SSE<br/>[AI] 前缀，不进 PTY
-        AI->>U: 继续推理或总结
-    else 拒绝
-        U->>AI: 拒绝
+        H-->>AI: 命令结果
+    else 写操作 RequireApproval
+        AI->>U: 待审核命令
+        alt 批准或会话自动批准
+            U->>AI: 批准
+            AI->>S: run_ssh_command
+            S->>H: SSH exec
+            H-->>AI: 命令结果
+        else 拒绝
+            U->>AI: 拒绝
+        end
+    else 危险 Deny
+        P-->>AI: 拒绝原因
         AI->>U: 调整方案
     end
 ```
@@ -268,7 +280,7 @@ sequenceDiagram
 | 你想做什么 | 用哪个 |
 |---|---|
 | 亲手输入命令、跑 TUI 程序 | **Web 终端**（PTY） |
-| 用自然语言让 AI 提议并执行 shell 命令 | **AI 助手**（需逐条批准） |
+| 用自然语言让 AI 提议并执行 shell 命令 | **AI 助手**（只读命令自动执行，写操作需批准） |
 | 当前连接里看手动输入 + AI 命令的实际输出 | 终端页左侧 **现场** |
 | 跨主机 AI 编排，刷新后继续看命令输出 | **AI 编排** → 左侧 **现场**（持久化 transcript） |
 | 同时监控多路进行中的 SSH 连接 | 菜单 **实时现场**（`#/live` 监控墙） |
@@ -297,6 +309,7 @@ sequenceDiagram
 | WebSocket | [reactphp-x/websocket-group](https://github.com/reactphp-x/websocket-group) |
 | SSH | 系统 `openssh-client`（PTY + 独立 exec 通道） |
 | AI | [neuron-core/neuron-ai](https://github.com/neuron-core/neuron-ai) |
+| 命令策略 | [reactphp-x/unbash](https://github.com/reactphp-x/unbash)（Bash AST 静态解析） |
 | 前端 | Vue 3 + [xterm.js](https://xtermjs.org/) + [asciinema-player](https://github.com/asciinema/asciinema-player) |
 | 存储 | SQLite（`ext-sqlite3`） |
 | 可选 | Redis（多 Worker 时 AI 线程锁 / SSE 状态） |
@@ -417,9 +430,13 @@ docker compose up --build
 1. 在底部输入框描述任务（如「查看磁盘使用并清理 /tmp」）
 2. AI 分析后可调用工具：
    - **`get_terminal_context`** — 读取终端最近输出（只读，**无需审核**）
-   - **`run_ssh_command`** — 提议 shell 命令（**必须审核**）；可选 `timeout_sec` 指定超时秒数
+   - **`run_ssh_command`** — 提议 shell 命令；经 **命令策略** 判定：
+     - **只读**（如 `ls`、`cat`、`systemctl status`）→ 自动执行，无需审核
+     - **写操作 / 未知** → **必须审核**（可勾选会话自动批准跳过后续需审批命令）
+     - **危险**（如 `vim`、`curl | bash`）→ 直接拒绝，自动批准无效
+     - 可选 `timeout_sec` 指定超时秒数
    - **`ask_user`** — 需求不明确时弹出选项（单选/多选）
-3. 出现 **待审核命令** 时，在侧栏底部点击 **批准** 或 **拒绝**；可勾选 **本会话后续命令自动批准**，此后同一会话内后续 `run_ssh_command` 将自动执行（重置对话或点「关闭」可恢复逐条审批）
+3. 出现 **待审核命令** 时，在侧栏底部点击 **批准** 或 **拒绝**；审批卡片会显示 **策略标签**（只读 / 写操作）与命令摘要。可勾选 **本会话后续需审批命令自动批准（危险命令仍会拦截）**，此后同一会话内策略判定为「需审批」的 `run_ssh_command` 将自动执行（`systemctl restart` 等高危写操作与会话自动批准无效；重置对话或点「关闭」可恢复逐条审批）
 4. 批准后通过 **独立 SSH exec** 执行；输出回传 AI 继续推理（可多轮）
 5. 点击 **工具调用** 可展开查看每次工具的参数与返回（消息 timeline 与工具卡片交错展示）
 
@@ -440,9 +457,11 @@ POST /api/ai/chat/reset            { conn_id }
 
 ### 说明与限制
 
+- 策略引擎在 Neuron 中间件与 SSH Bridge **双层**校验；即使绕过 UI，Bridge 仍会拦截 Deny 类命令
+- 仅 AI exec 路径受策略约束；Web 终端 PTY 手动输入不受限
 - AI exec 每次为**新 shell 进程**，工作目录/环境可能与交互 PTY 不一致（例如在 PTY 里 `cd` 后，AI 仍可能从 home 执行）
-- AI exec 无 stdin，交互式命令（vim、top、mysql 客户端等）会挂起直至超时；请在左侧 PTY 终端手动操作
-- 仅 `run_ssh_command` 会触发待审核；只读工具自动执行
+- AI exec 无 stdin，交互式命令（vim、top、mysql 客户端等）会被策略拒绝或挂起直至超时；请在左侧 PTY 终端手动操作
+- Neuron 只读工具（`get_terminal_context` 等）自动执行；`run_ssh_command` 走策略引擎
 
 <a id="ai-orchestration"></a>
 
@@ -516,7 +535,7 @@ flowchart LR
 
 1. 侧边栏进入 **AI 编排**，点击 **新建会话**（或从历史列表 **继续**）
 2. 在右侧输入任务，例如：「检查 web-01 和 web-02 的 nginx 是否在运行」
-3. AI 调用工具（见下表）；遇到 **`run_ssh_command`** 时在底部 **批准 / 拒绝**；可勾选 **本会话后续命令自动批准** 跳过后续逐条审批（重置对话或关闭可恢复）
+3. AI 调用工具（见下表）；遇到需审批的 **`run_ssh_command`** 时在底部 **批准 / 拒绝**；可勾选 **本会话后续需审批命令自动批准（危险命令仍会拦截）**
 4. 批准后 `SshExecBridge` 对该 `host_id` 建立（或复用）exec 连接并执行；输出写入左侧 **现场** 与 live log
 5. AI 根据输出继续推理，可切换主机执行下一条命令，直至任务完成
 6. 刷新 `#/ai/session/{id}` 后，**现场** 通过 SSE `replay` 事件或 transcript API 恢复；聊天 timeline 含工具卡片
@@ -529,7 +548,7 @@ flowchart LR
 |---|---|---|
 | **`list_hosts`** | 否 | 列出平台已保存主机（id、名称、地址），供 AI 选择目标 |
 | **`get_command_context`** | 否 | 读取本编排会话中，某主机上最近 AI 命令输出 |
-| **`run_ssh_command`** | **是** | 在指定 `host_id` 上执行一条 shell 命令；参数含 `command`、`reason`、可选 `timeout_sec` |
+| **`run_ssh_command`** | **视策略** | 在指定 `host_id` 上执行一条 shell 命令；只读自动执行，写操作需批准，危险拒绝 |
 | **`ask_user`** | 否 | 需求不明确时向用户弹出选项（单选/多选） |
 
 > 编排模式下 **`run_ssh_command` 必须带 `host_id`**；终端 AI 则固定在当前 `conn_id` 对应主机上执行。
@@ -698,6 +717,72 @@ POST   /api/settings/ai/models                       # 拉取 Provider 模型列
 
 `HTTP_WORKERS>1` 时建议配置 `REDIS_URL`，用于 AI 线程锁与 SSE 状态同步（见 [`.env.example`](.env.example)）。
 
+<a id="command-policy"></a>
+
+## 命令策略（Web 面板）
+
+AI 执行 `run_ssh_command` 前，**命令策略引擎**会用 [reactphp-x/unbash](https://github.com/reactphp-x/unbash) 将命令解析为 Bash AST，再按规则给出三种决策：
+
+| 决策 | 行为 | 会话自动批准 |
+|---|---|---|
+| **AutoRun** | 直接执行 | 无关 |
+| **RequireApproval** | 弹出审批 | **无效** |
+| **Deny** | 拒绝并反馈 AI | **无效** |
+
+未出现在配置列表中的命令默认 **AutoRun**。Neuron 中间件与 `SshSessionBridge` / `SshExecBridge` **双层**校验，Bridge 层不可绕过 Deny。
+
+### 入口
+
+侧边栏 → **命令策略**（`#/settings/command-policy`）
+
+### 界面说明
+
+| 区域 | 作用 |
+|---|---|
+| **内置默认策略** | 只读展示 `config/command_policy.defaults.php` 中的 `deny_binaries`、`require_approval_binaries` |
+| **覆盖策略列表** | 数据库中的增量规则，按作用域与优先级与内置默认合并 |
+| **新建 / 编辑** | 名称、作用域（全局 / 主机分组 / 单主机）、优先级、启用开关、规则 JSON |
+
+修改内置默认需编辑 [`config/command_policy.defaults.php`](config/command_policy.defaults.php) 并重启服务；Web 面板仅管理数据库覆盖项。
+
+### 规则 JSON 可用键
+
+均为**增量覆盖**（数组合并、同键追加）：
+
+- `deny_binaries` — 拒绝的可执行文件
+- `require_approval_binaries` — 需人工审批的可执行文件（会话自动批准无效）
+
+示例（全局追加需审批命令）：
+
+```json
+{
+  "require_approval_binaries": ["docker"]
+}
+```
+
+### 存储与审计
+
+- 覆盖策略存 SQLite 表 `command_policies`
+- 每次 AI 命令执行写入 `command_executions`（命令、决策、exit_code 等）
+- 策略增删改写入 **操作日志**（`command_policy` 资源）
+
+### API
+
+均需 Basic Auth + 2FA。
+
+```text
+GET    /api/settings/command-policy           # 内置默认 + 覆盖策略列表
+PUT    /api/settings/command-policy           # 新建或更新覆盖策略
+DELETE /api/settings/command-policy/{id}    # 删除覆盖策略
+```
+
+### 说明与限制
+
+- **静态分析、不展开变量**：嵌套在 `sh -c` 内的脚本会二次解析；变量路径无法静态确定时可能漏检
+- **内置硬拒绝**：`curl \| bash` 等管道组合（不写在配置里）
+- **Web 终端 PTY** 手动输入不受策略约束，仅 AI exec 路径生效
+- 解析失败时保守降级为 RequireApproval
+
 <a id="field-vs-live"></a>
 
 ## 现场与实时现场
@@ -822,6 +907,8 @@ SESSION_RECORDING_ENABLED=true
 SESSION_RECORDING_DIR=storage/recordings
 
 # AI — 在 Web 面板配置：侧边栏 → AI 设置 (#/settings/ai)
+# 命令策略 — 在 Web 面板配置：侧边栏 → 命令策略 (#/settings/command-policy)
+# 或编辑 config/command_policy.defaults.php 修改内置默认规则
 # HTTP_WORKERS>1 时建议配置 REDIS_URL
 
 # 安全
@@ -863,7 +950,11 @@ Neuron Agents
   ├── SshAgent + RunSshCommandTool（终端，conn_id）
   └── OrchestratorAgent + list_hosts / run_ssh_command（编排，ai_session_id）
 
-Storage: SQLite（主机、会话、ai_sessions、ai_profiles、审计）+ storage/recordings/Y/m/d/ + storage/neuron/Y/m/d/
+CommandPolicyEngine（unbash AST）
+  ├── Neuron 中间件：AutoRun / RequireApproval / Deny → 审批或 ToolFeedback
+  └── SSH Bridge 硬门禁：Deny 不可绕过
+
+Storage: SQLite（主机、会话、ai_sessions、ai_profiles、command_policies、command_executions、审计）+ storage/recordings/Y/m/d/ + storage/neuron/Y/m/d/
 ```
 
 > 录像与 neuron 聊天/现场文件按 **`Y/m/d` 日期子目录**落盘；旧版扁平路径（如 `recordings/{id}`、`ai-sessions/live/{id}.log`）仍可读取。
@@ -882,6 +973,8 @@ Web SSH 会把 shell 暴露到浏览器，请务必：
 - 限制网络访问（防火墙 / 反向代理 IP 白名单）
 - 妥善保管 `APP_KEY` 与 `.env`，不要提交到版本库
 - AI 批准的命令等同你在服务器上执行 shell，务必审阅后再点批准
+- **命令策略**会拦截 `curl | bash` 等高危命令；`rm` 等写操作需人工审批，但无法覆盖所有误操作
+- 会话「自动批准」不能绕过策略 **Deny** 与 **需审批** 列表中的命令
 - Docker 中 SSH 私钥挂载为只读
 
 <a id="test"></a>

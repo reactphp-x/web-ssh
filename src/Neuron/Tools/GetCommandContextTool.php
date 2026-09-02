@@ -13,12 +13,17 @@ final class GetCommandContextTool extends Tool
 {
     public const NAME = 'get_command_context';
 
-    public function __construct()
+    public function __construct(private readonly int $aiSessionId)
     {
         parent::__construct(
             self::NAME,
             '读取指定主机上最近 AI 命令输出（只读，无需用户批准）。',
         );
+    }
+
+    public function getAiSessionId(): int
+    {
+        return $this->aiSessionId;
     }
 
     protected function properties(): array
@@ -34,10 +39,12 @@ final class GetCommandContextTool extends Tool
      */
     public function __invoke(int $host_id, ?int $max_chars = null): string
     {
+        OrchestratorToolContext::useSession($this->aiSessionId);
+
         $maxChars = max(500, min(8000, $max_chars ?? 4000));
         $bridge = OrchestratorToolContext::execBridge();
         $context = $bridge->getRecentOutput(
-            OrchestratorToolContext::aiSessionId(),
+            $this->aiSessionId,
             $host_id,
             $maxChars,
         );

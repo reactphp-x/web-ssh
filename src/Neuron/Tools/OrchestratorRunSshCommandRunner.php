@@ -19,6 +19,8 @@ final class OrchestratorRunSshCommandRunner
      */
     public static function run(int $aiSessionId, int $hostId, string $command, string $reason, int $timeoutSec): array
     {
+        OrchestratorToolContext::useSession($aiSessionId);
+
         $command = trim($command);
         $reason = trim($reason);
         if ($command === '') {

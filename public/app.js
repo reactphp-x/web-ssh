@@ -93,6 +93,14 @@ const parseRoute = () => {
             mode: null,
         };
     }
+    if (parts[0] === 'settings' && parts[1] === 'command-policy') {
+        return {
+            name: 'command-policy-settings',
+            id: null,
+            nonce: null,
+            mode: null,
+        };
+    }
     return {
         name: parts[0] || 'hosts',
         id: parts[1] ? Number(parts[1]) : null,
@@ -299,8 +307,25 @@ const formatToolPresentation = (item, hostMap = null) => {
                     summary = '命令执行成功';
                 } else if (parsed.exit_code != null) {
                     summary = `命令结束，退出码 ${parsed.exit_code}`;
+                } else if (parsed.ok === false) {
+                    const policyLabel = parsed.policy?.label;
+                    const policyReason = parsed.error || parsed.policy?.reason;
+                    if (policyLabel === '已拒绝') {
+                        summary = policyReason ? `策略已拒绝：${policyReason}` : '策略已拒绝';
+                    } else if (policyReason) {
+                        summary = policyReason;
+                    } else {
+                        summary = '命令执行失败';
+                    }
                 } else {
-                    summary = parsed.ok === false ? '命令执行失败' : '命令已执行';
+                    summary = '命令已执行';
+                }
+                if (parsed.policy) {
+                    blocks.push({
+                        kind: 'text',
+                        title: '策略',
+                        content: [parsed.policy.label, parsed.policy.reason].filter(Boolean).join(' · '),
+                    });
                 }
                 if (parsed.output) {
                     const output = truncateToolText(parsed.output, 1200);
@@ -1276,6 +1301,7 @@ const appOptions = {
             if (name === 'sessions') return 'sessions';
             if (name === 'audit-logs') return 'audit';
             if (name === 'ai-settings') return 'ai-settings';
+            if (name === 'command-policy-settings') return 'command-policy-settings';
             if (name === 'hosts' && id !== null) return 'host-form';
             return 'hosts';
         });
@@ -1419,6 +1445,9 @@ const appOptions = {
                     <a href="#/settings/ai" title="AI 设置" :class="{ active: currentView === 'ai-settings' }" @click="closeMobileNav">
                         <span class="nav-icon">AI</span><span class="nav-label">AI 设置</span>
                     </a>
+                    <a href="#/settings/command-policy" title="命令策略" :class="{ active: currentView === 'command-policy-settings' }" @click="closeMobileNav">
+                        <span class="nav-icon">策</span><span class="nav-label">命令策略</span>
+                    </a>
                 </nav>
             </aside>
             <main class="main">
@@ -1435,6 +1464,7 @@ const appOptions = {
                 <SessionListView v-else-if="currentView === 'sessions'" />
                 <AuditLogView v-else-if="currentView === 'audit'" />
                 <AiSettingsView v-else-if="currentView === 'ai-settings'" @flash="setFlash" />
+                <CommandPolicySettingsView v-else-if="currentView === 'command-policy-settings'" @flash="setFlash" />
                 <TerminalWorkspace
                     v-show="currentView === 'terminal'"
                     :visible="currentView === 'terminal'"
@@ -3752,20 +3782,25 @@ const appOptions = {
                                         <span class="ai-approval-host-label">目标主机</span>
                                         <strong>{{ action.host.label }}</strong>
                                     </div>
+                                    <div v-if="action.policy?.label" class="ai-approval-policy">
+                                        <span class="ai-approval-policy-label">策略</span>
+                                        <strong>{{ action.policy.label }}</strong>
+                                        <span v-if="action.policy.summary" class="ai-approval-policy-summary">{{ action.policy.summary }}</span>
+                                    </div>
                                     <pre>{{ action.detail || action.description }}</pre>
                                 </div>
                             </div>
                             <div class="actions">
                                 <label class="ai-approval-auto">
                                     <input type="checkbox" v-model="approvalAutoApprove">
-                                    <span>本会话后续命令自动批准</span>
+                                    <span>本会话后续需审批命令自动批准（策略「需审批」与「已拒绝」命令不受此选项影响）</span>
                                 </label>
                                 <button type="button" @click="submitApproval(false)" :disabled="busy">拒绝</button>
                                 <button class="primary" type="button" @click="submitApproval(true)" :disabled="busy">批准</button>
                             </div>
                         </div>
                         <div v-else-if="commandAutoApprove" class="ai-auto-approve-banner">
-                            <span>本会话后续 SSH 命令将自动批准执行</span>
+                            <span>本会话后续需审批 SSH 命令将自动批准（策略「需审批」与「已拒绝」命令不受此选项影响）</span>
                             <button type="button" @click="disableCommandAutoApprove" :disabled="busy">关闭</button>
                         </div>
                         <div v-if="feedback" class="ai-feedback">
@@ -5918,6 +5953,280 @@ const appOptions = {
                         <span>第 {{ page }} 页 / 共 {{ Math.ceil(total / perPage) || 1 }} 页</span>
                         <button :disabled="page * perPage >= total" @click="page++; load()">下一页</button>
                     </div>
+                </div>
+            `,
+        },
+        CommandPolicySettingsView: {
+            emits: ['flash'],
+            setup(_props, { emit }) {
+                const loading = ref(true);
+                const saving = ref(false);
+                const defaults = ref({});
+                const policies = ref([]);
+                const hosts = ref([]);
+                const groups = ref([]);
+                const editingId = ref(null);
+
+                const emptyForm = () => ({
+                    name: '',
+                    scope_type: 'global',
+                    scope_id: '',
+                    priority: 0,
+                    enabled: true,
+                    rules_json: '{\n  "deny_binaries": [],\n  "require_approval_binaries": []\n}',
+                });
+
+                const form = reactive(emptyForm());
+                const isNew = computed(() => editingId.value === 'new');
+
+                const scopeLabel = (policy) => {
+                    if (policy.scope_type === 'host') {
+                        const host = hosts.value.find((h) => h.id === policy.scope_id);
+                        return host ? `主机 · ${host.name}` : `主机 #${policy.scope_id}`;
+                    }
+                    if (policy.scope_type === 'host_group') {
+                        const group = groups.value.find((g) => g.id === policy.scope_id);
+                        return group ? `分组 · ${group.name}` : `分组 #${policy.scope_id}`;
+                    }
+                    return '全局';
+                };
+
+                const formatRuleList = (items) => {
+                    if (!Array.isArray(items) || items.length === 0) {
+                        return '（无）';
+                    }
+                    return items.map((item) => {
+                        if (Array.isArray(item)) {
+                            return item.join(' ');
+                        }
+                        return String(item);
+                    }).join('、');
+                };
+
+                const loadOptions = async () => {
+                    const [hostData, groupData] = await Promise.all([
+                        api.get('/api/hosts/options'),
+                        api.get('/api/groups'),
+                    ]);
+                    hosts.value = hostData.items || [];
+                    groups.value = groupData.items || [];
+                };
+
+                const load = async () => {
+                    loading.value = true;
+                    try {
+                        const [data] = await Promise.all([
+                            api.get('/api/settings/command-policy'),
+                            loadOptions(),
+                        ]);
+                        defaults.value = data.defaults || {};
+                        policies.value = data.policies || [];
+                    } catch (error) {
+                        emit('flash', error.message, 'err');
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const startNew = () => {
+                    editingId.value = 'new';
+                    Object.assign(form, emptyForm());
+                };
+
+                const editPolicy = (policy) => {
+                    editingId.value = policy.id;
+                    form.name = policy.name || '';
+                    form.scope_type = policy.scope_type || 'global';
+                    form.scope_id = policy.scope_id ?? '';
+                    form.priority = policy.priority ?? 0;
+                    form.enabled = !!policy.enabled;
+                    form.rules_json = JSON.stringify(policy.rules || {}, null, 2);
+                };
+
+                const cancelEdit = () => {
+                    editingId.value = null;
+                    Object.assign(form, emptyForm());
+                };
+
+                const save = async () => {
+                    let rules;
+                    try {
+                        rules = JSON.parse(form.rules_json || '{}');
+                        if (rules === null || typeof rules !== 'object' || Array.isArray(rules)) {
+                            throw new Error('规则必须是 JSON 对象');
+                        }
+                    } catch (error) {
+                        emit('flash', '规则 JSON 无效：' + error.message, 'err');
+                        return;
+                    }
+
+                    saving.value = true;
+                    try {
+                        const payload = {
+                            name: form.name.trim(),
+                            scope_type: form.scope_type,
+                            scope_id: form.scope_type === 'global' || form.scope_id === '' ? null : Number(form.scope_id),
+                            priority: Number(form.priority) || 0,
+                            enabled: !!form.enabled,
+                            rules,
+                        };
+                        if (typeof editingId.value === 'number') {
+                            payload.id = editingId.value;
+                        }
+                        await api.put('/api/settings/command-policy', payload);
+                        emit('flash', isNew.value ? '已创建命令策略' : '命令策略已保存', 'ok');
+                        editingId.value = null;
+                        Object.assign(form, emptyForm());
+                        await load();
+                    } catch (error) {
+                        emit('flash', error.message, 'err');
+                    } finally {
+                        saving.value = false;
+                    }
+                };
+
+                const removePolicy = async (policy) => {
+                    if (!confirm('确定删除策略「' + policy.name + '」？')) {
+                        return;
+                    }
+                    saving.value = true;
+                    try {
+                        await api.delete('/api/settings/command-policy/' + policy.id);
+                        if (editingId.value === policy.id) {
+                            cancelEdit();
+                        }
+                        emit('flash', '已删除命令策略', 'ok');
+                        await load();
+                    } catch (error) {
+                        emit('flash', error.message, 'err');
+                    } finally {
+                        saving.value = false;
+                    }
+                };
+
+                onMounted(load);
+
+                return {
+                    loading,
+                    saving,
+                    defaults,
+                    policies,
+                    hosts,
+                    groups,
+                    editingId,
+                    form,
+                    isNew,
+                    scopeLabel,
+                    formatRuleList,
+                    load,
+                    startNew,
+                    editPolicy,
+                    cancelEdit,
+                    save,
+                    removePolicy,
+                };
+            },
+            template: `
+                <div class="panel command-policy-panel">
+                    <h2>命令策略</h2>
+                    <p class="hint">控制 AI 执行 SSH 命令时的自动批准、人工审批与拒绝规则。内置默认策略来自配置文件；下方可添加数据库覆盖策略（按作用域与优先级合并）。</p>
+                    <p v-if="loading" class="hint">加载中…</p>
+                    <template v-else>
+                        <details class="command-policy-defaults" open>
+                            <summary>内置默认策略（只读）</summary>
+                            <div class="command-policy-default-grid">
+                                <div class="full">
+                                    <h4>拒绝命令（deny_binaries）</h4>
+                                    <p class="command-policy-tags">{{ formatRuleList(defaults.deny_binaries) }}</p>
+                                </div>
+                                <div class="full">
+                                    <h4>需审批命令（require_approval_binaries）</h4>
+                                    <p class="command-policy-tags">{{ formatRuleList(defaults.require_approval_binaries) }}</p>
+                                </div>
+                                <p class="hint full">未出现在上述列表中的命令将自动执行；命中「需审批」时，会话自动批准无效。</p>
+                            </div>
+                        </details>
+
+                        <div class="toolbar" style="margin-top:16px">
+                            <button class="primary" type="button" @click="startNew" :disabled="saving">新建覆盖策略</button>
+                            <button type="button" @click="load" :disabled="saving">刷新</button>
+                        </div>
+
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>名称</th>
+                                    <th>作用域</th>
+                                    <th>优先级</th>
+                                    <th>状态</th>
+                                    <th>规则摘要</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="policy in policies" :key="policy.id">
+                                    <td>{{ policy.name }}</td>
+                                    <td>{{ scopeLabel(policy) }}</td>
+                                    <td>{{ policy.priority }}</td>
+                                    <td>{{ policy.enabled ? '启用' : '禁用' }}</td>
+                                    <td class="command-policy-rule-summary">{{ Object.keys(policy.rules || {}).join(', ') || '—' }}</td>
+                                    <td class="actions">
+                                        <button type="button" @click="editPolicy(policy)" :disabled="saving">编辑</button>
+                                        <button type="button" class="danger" @click="removePolicy(policy)" :disabled="saving">删除</button>
+                                    </td>
+                                </tr>
+                                <tr v-if="!policies.length"><td colspan="6">暂无数据库覆盖策略</td></tr>
+                            </tbody>
+                        </table>
+
+                        <div v-if="editingId !== null" class="command-policy-editor">
+                            <h3>{{ isNew ? '新建覆盖策略' : '编辑覆盖策略' }}</h3>
+                            <div class="form-grid">
+                                <div class="full"><label>名称 *</label><input v-model="form.name" placeholder="例如：生产环境加强"></div>
+                                <div>
+                                    <label>作用域</label>
+                                    <select v-model="form.scope_type">
+                                        <option value="global">全局</option>
+                                        <option value="host_group">主机分组</option>
+                                        <option value="host">单主机</option>
+                                    </select>
+                                </div>
+                                <div v-if="form.scope_type === 'host_group'">
+                                    <label>主机分组</label>
+                                    <select v-model="form.scope_id">
+                                        <option value="">请选择</option>
+                                        <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
+                                    </select>
+                                </div>
+                                <div v-else-if="form.scope_type === 'host'">
+                                    <label>主机</label>
+                                    <select v-model="form.scope_id">
+                                        <option value="">请选择</option>
+                                        <option v-for="h in hosts" :key="h.id" :value="h.id">{{ h.name }} ({{ h.address }})</option>
+                                    </select>
+                                </div>
+                                <div v-else>
+                                    <label>作用域 ID</label>
+                                    <input value="—" disabled>
+                                </div>
+                                <div><label>优先级</label><input v-model.number="form.priority" type="number"></div>
+                                <div class="full">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" v-model="form.enabled"> 启用
+                                    </label>
+                                </div>
+                                <div class="full">
+                                    <label>规则 JSON（增量覆盖内置默认）</label>
+                                    <textarea v-model="form.rules_json" rows="12" class="command-policy-json"></textarea>
+                                    <p class="hint">可用键：deny_binaries、require_approval_binaries</p>
+                                </div>
+                            </div>
+                            <div class="actions" style="margin-top:12px">
+                                <button class="primary" type="button" @click="save" :disabled="saving">{{ isNew ? '创建' : '保存' }}</button>
+                                <button type="button" @click="cancelEdit" :disabled="saving">取消</button>
+                            </div>
+                        </div>
+                    </template>
                 </div>
             `,
         },

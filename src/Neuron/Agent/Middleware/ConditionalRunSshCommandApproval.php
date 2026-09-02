@@ -4,25 +4,15 @@ declare(strict_types=1);
 
 namespace App\Neuron\Agent\Middleware;
 
-use App\Neuron\Tools\OrchestratorRunSshCommandTool;
-use App\Neuron\Tools\RunSshCommandTool;
-use App\Ssh\OrchestratorToolContext;
-use App\Ssh\SshToolContext;
-use NeuronAI\Agent\Middleware\ToolApproval;
-
 final class ConditionalRunSshCommandApproval
 {
-    public static function forSshAgent(): ToolApproval
+    public static function forSshAgent(): TerminalRunSshCommandApproval
     {
-        return new ToolApproval([
-            RunSshCommandTool::class => static fn(array $args): bool => SshToolContext::commandApprovalRequired(),
-        ]);
+        return new TerminalRunSshCommandApproval();
     }
 
-    public static function forOrchestrator(): ToolApproval
+    public static function forOrchestrator(): OrchestratorRunSshCommandApproval
     {
-        return new ToolApproval([
-            OrchestratorRunSshCommandTool::class => static fn(array $args): bool => OrchestratorToolContext::commandApprovalRequired(),
-        ]);
+        return new OrchestratorRunSshCommandApproval();
     }
 }

@@ -15,6 +15,7 @@ use App\Chat\Sse;
 use App\Chat\ThreadLock;
 use App\Neuron\HttpClient\HttpStreamScope;
 use App\Ssh\SshSessionBridge;
+use App\Ssh\SshToolContext;
 use Psr\Log\LoggerInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -281,6 +282,7 @@ final class AiChatController
             } finally {
                 $this->streamSession->finish($lockKey);
                 $this->locks->release($lockKey);
+                SshToolContext::release($connId);
                 Sse::end($through);
             }
         }));

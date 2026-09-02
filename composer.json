@@ -14,7 +14,8 @@
         "reactphp-x/log": "dev-master",
         "reactphp-x/redis-pool": "^2.0",
         "react/async": "^4.3",
-        "neuron-core/neuron-ai": "^3.16"
+        "neuron-core/neuron-ai": "^3.16",
+        "reactphp-x/unbash": "^1.0"
     },
     "autoload": {
         "psr-4": {

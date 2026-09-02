@@ -20,6 +20,8 @@ final class RunSshCommandExecutorHandler
      */
     public function __invoke(string $command, string $reason, ?int $timeout_sec = null): string
     {
+        SshToolContext::use($this->connId);
+
         $timeoutSec = CommandTimeoutResolver::resolve(
             $timeout_sec,
             SshToolContext::commandTimeout(),

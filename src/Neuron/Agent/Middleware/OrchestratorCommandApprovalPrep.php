@@ -7,6 +7,8 @@ namespace App\Neuron\Agent\Middleware;
 use App\Neuron\Agent\Tools\OrchestratorRunSshCommandExecutorHandler;
 use App\Neuron\Agent\Tools\OrchestratorRunSshCommandPendingHandler;
 use App\Neuron\Agent\Tools\ToolFeedbackResultHandler;
+use App\Neuron\Tools\GetCommandContextTool;
+use App\Neuron\Tools\ListHostsTool;
 use App\Neuron\Tools\OrchestratorRunSshCommandTool;
 use App\Neuron\Tools\ToolJson;
 use App\Ssh\OrchestratorToolContext;
@@ -45,6 +47,11 @@ final class OrchestratorCommandApprovalPrep implements WorkflowMiddleware
 
     private function normalizeOrchestratorRunSshCommands(ToolCallEvent $event): void
     {
+        OrchestratorToolContext::useSession($this->resolveOrchestratorSessionId($event));
+
+        $policyEngine = OrchestratorToolContext::policyEngine();
+        $policyHelper = $policyEngine !== null ? new RunSshCommandPolicyHelper($policyEngine) : null;
+
         $activeHostId = OrchestratorToolContext::execBridge()->getActiveSegment(
             OrchestratorToolContext::aiSessionId(),
         )['host_id'] ?? null;
@@ -53,6 +60,12 @@ final class OrchestratorCommandApprovalPrep implements WorkflowMiddleware
             if ($tool->getName() !== OrchestratorRunSshCommandTool::NAME) {
                 continue;
             }
+
+            if (!$tool instanceof OrchestratorRunSshCommandTool) {
+                continue;
+            }
+
+            OrchestratorToolContext::useSession($tool->getAiSessionId());
 
             $error = OrchestratorRunSshCommandInputNormalizer::apply(
                 $tool,
@@ -69,9 +82,18 @@ final class OrchestratorCommandApprovalPrep implements WorkflowMiddleware
                 continue;
             }
 
-            if (OrchestratorToolContext::commandApprovalRequired()) {
+            if ($policyHelper !== null && $tool instanceof OrchestratorRunSshCommandTool) {
+                $policyHelper->applyOrchestratorPolicy($tool);
+                continue;
+            }
+
+            if (!$tool instanceof OrchestratorRunSshCommandTool) {
+                continue;
+            }
+
+            if (RunSshCommandPolicyHelper::orchestratorToolRequiresApproval($tool->getInputs())) {
                 $tool->setCallable(new OrchestratorRunSshCommandPendingHandler());
-            } elseif ($tool instanceof OrchestratorRunSshCommandTool) {
+            } else {
                 $tool->setCallable(new OrchestratorRunSshCommandExecutorHandler($tool->getAiSessionId()));
             }
         }
@@ -88,11 +110,30 @@ final class OrchestratorCommandApprovalPrep implements WorkflowMiddleware
                 continue;
             }
 
+            OrchestratorToolContext::useSession($tool->getAiSessionId());
+
             $callId = $tool->getCallId();
             $action = $callId === null ? null : $request->getAction($callId);
             if ($action !== null && $action->isApproved()) {
                 $tool->setCallable(new OrchestratorRunSshCommandExecutorHandler($tool->getAiSessionId()));
             }
         }
+    }
+
+    private function resolveOrchestratorSessionId(ToolCallEvent $event): int
+    {
+        foreach ($event->toolCallMessage->getTools() as $tool) {
+            if ($tool instanceof OrchestratorRunSshCommandTool) {
+                return $tool->getAiSessionId();
+            }
+            if ($tool instanceof ListHostsTool) {
+                return $tool->getAiSessionId();
+            }
+            if ($tool instanceof GetCommandContextTool) {
+                return $tool->getAiSessionId();
+            }
+        }
+
+        return OrchestratorToolContext::aiSessionId();
     }
 }

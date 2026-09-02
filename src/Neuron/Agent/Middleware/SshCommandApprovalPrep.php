@@ -12,7 +12,6 @@ use App\Neuron\Tools\ToolJson;
 use App\Ssh\SshToolContext;
 use NeuronAI\Agent\Events\ToolCallEvent;
 use NeuronAI\Agent\Nodes\ToolNode;
-use NeuronAI\Tools\ToolInterface;
 use NeuronAI\Workflow\Events\Event;
 use NeuronAI\Workflow\Interrupt\ApprovalRequest;
 use NeuronAI\Workflow\Middleware\WorkflowMiddleware;
@@ -46,10 +45,19 @@ final class SshCommandApprovalPrep implements WorkflowMiddleware
 
     private function normalizeTerminalRunSshCommands(ToolCallEvent $event): void
     {
+        $policyEngine = SshToolContext::policyEngine();
+        $policyHelper = $policyEngine !== null ? new RunSshCommandPolicyHelper($policyEngine) : null;
+
         foreach ($event->toolCallMessage->getTools() as $tool) {
             if ($tool->getName() !== RunSshCommandTool::NAME) {
                 continue;
             }
+
+            if (!$tool instanceof RunSshCommandTool) {
+                continue;
+            }
+
+            SshToolContext::use($tool->getConnId());
 
             $error = RunSshCommandInputNormalizer::applyTerminal(
                 $tool,
@@ -65,9 +73,18 @@ final class SshCommandApprovalPrep implements WorkflowMiddleware
                 continue;
             }
 
-            if (SshToolContext::commandApprovalRequired()) {
+            if ($policyHelper !== null && $tool instanceof RunSshCommandTool) {
+                $policyHelper->applyTerminalPolicy($tool);
+                continue;
+            }
+
+            if (!$tool instanceof RunSshCommandTool) {
+                continue;
+            }
+
+            if (RunSshCommandPolicyHelper::terminalToolRequiresApproval($tool->getInputs())) {
                 $tool->setCallable(new RunSshCommandPendingHandler());
-            } elseif ($tool instanceof RunSshCommandTool) {
+            } else {
                 $tool->setCallable(new RunSshCommandExecutorHandler($tool->getConnId()));
             }
         }
@@ -83,6 +100,8 @@ final class SshCommandApprovalPrep implements WorkflowMiddleware
             if (!$tool instanceof RunSshCommandTool) {
                 continue;
             }
+
+            SshToolContext::use($tool->getConnId());
 
             $callId = $tool->getCallId();
             $action = $callId === null ? null : $request->getAction($callId);

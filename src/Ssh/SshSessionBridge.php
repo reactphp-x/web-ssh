@@ -19,12 +19,17 @@ final class SshSessionBridge
      *     target: SshTarget,
      *     workspace: OpenSshWorkspace,
      *     session_id: int,
+     *     host_id: int,
+     *     host_group_id: ?int,
      * }> */
     private array $sessions = [];
 
     public function __construct(
         private readonly ?SshLiveRegistry $liveRegistry = null,
         private readonly ?SessionRecorder $recorder = null,
+        private readonly ?\App\Policy\CommandPolicyEngine $policyEngine = null,
+        private readonly ?\App\Repository\CommandExecutionRepository $commandExecutions = null,
+        private readonly ?\App\Service\AuditService $audit = null,
     ) {
     }
 
@@ -34,6 +39,8 @@ final class SshSessionBridge
         SshTerminalSession $session,
         SshTarget $target,
         int $sessionId,
+        int $hostId = 0,
+        ?int $hostGroupId = null,
     ): void {
         $this->unregister($connId);
 
@@ -44,6 +51,8 @@ final class SshSessionBridge
             'target' => $target,
             'workspace' => OpenSshWorkspace::prepare($target, Ssh2Client::connectTimeout()),
             'session_id' => $sessionId,
+            'host_id' => $hostId,
+            'host_group_id' => $hostGroupId,
         ];
     }
 
@@ -103,7 +112,20 @@ final class SshSessionBridge
             return reject(new RuntimeException('命令不能为空。'));
         }
 
-        if ($this->isBlockedCommand($command)) {
+        $policyDecision = null;
+        if ($this->policyEngine !== null) {
+            $policyDecision = $this->policyEngine->evaluate($command, new \App\Policy\PolicyContext(
+                username: $entry['username'],
+                hostId: $entry['host_id'] > 0 ? $entry['host_id'] : null,
+                hostGroupId: $entry['host_group_id'],
+                source: 'terminal_ai',
+                connId: $connId,
+                threadKey: $connId,
+            ));
+            if ($policyDecision->action === \App\Policy\PolicyAction::Deny) {
+                return reject(new RuntimeException($policyDecision->reason));
+            }
+        } elseif ($this->isBlockedCommand($command)) {
             return reject(new RuntimeException('该命令被禁止通过 AI 执行（交互式/TUI 命令）。'));
         }
 
@@ -120,15 +142,60 @@ final class SshSessionBridge
             function (string $chunk) use ($connId, $sessionId): void {
                 $this->publishAiChunk($connId, $sessionId, $chunk);
             },
-        )->then(function (CommandResult $result) use ($connId, $sessionId): CommandResult {
+        )->then(function (CommandResult $result) use ($connId, $sessionId, $entry, $command, $policyDecision): CommandResult {
             $this->publishAiChunk(
                 $connId,
                 $sessionId,
                 self::formatLiveFooter($result->exitCode, $result->timedOut),
             );
+            $this->recordExecution($entry, $command, $result, $policyDecision);
 
             return $result;
         });
+    }
+
+    /**
+     * @param array{username: string, session_id: int, host_id: int, host_group_id: ?int} $entry
+     */
+    private function recordExecution(array $entry, string $command, CommandResult $result, ?\App\Policy\PolicyDecision $policyDecision): void
+    {
+        if ($this->commandExecutions === null || $this->policyEngine === null) {
+            return;
+        }
+
+        $decision = $policyDecision ?? $this->policyEngine->evaluate($command, new \App\Policy\PolicyContext(
+            username: $entry['username'],
+            hostId: $entry['host_id'] > 0 ? $entry['host_id'] : null,
+            hostGroupId: $entry['host_group_id'],
+            source: 'terminal_ai',
+        ));
+
+        $this->commandExecutions->write(
+            $entry['username'],
+            $entry['host_id'] > 0 ? $entry['host_id'] : null,
+            $command,
+            $decision->action->value,
+            $decision->matchedRule,
+            $decision->inspection->toAuditSummary(),
+            $entry['session_id'],
+            null,
+            $result->exitCode,
+            $result->timedOut,
+        );
+    }
+
+    public function getHostContext(string $connId): ?array
+    {
+        $entry = $this->sessions[$connId] ?? null;
+        if ($entry === null) {
+            return null;
+        }
+
+        return [
+            'host_id' => $entry['host_id'] > 0 ? $entry['host_id'] : null,
+            'host_group_id' => $entry['host_group_id'],
+            'username' => $entry['username'],
+        ];
     }
 
     private function publishAiChunk(string $connId, int $sessionId, string $chunk): void

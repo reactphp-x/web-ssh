@@ -5,26 +5,20 @@ declare(strict_types=1);
 namespace App\Ssh;
 
 use App\Chat\CommandApprovalTrust;
+use App\Policy\CommandPolicyEngine;
+use App\Policy\PolicyDecisionStore;
 use App\Repository\HostRepository;
 use RuntimeException;
 
+/**
+ * Per-thread orchestrator tool context (keyed by aiSessionId).
+ */
 final class OrchestratorToolContext
 {
-    private static ?SshExecBridge $execBridge = null;
+    /** @var array<string, OrchestratorToolContextState> */
+    private static array $states = [];
 
-    private static ?HostRepository $hosts = null;
-
-    private static int $aiSessionId = 0;
-
-    private static string $username = '';
-
-    private static int $commandTimeout = 30;
-
-    private static int $commandTimeoutMax = 300;
-
-    private static string $threadKey = '';
-
-    private static ?CommandApprovalTrust $approvalTrust = null;
+    private static ?string $activeThreadKey = null;
 
     public static function configure(
         SshExecBridge $execBridge,
@@ -34,66 +28,111 @@ final class OrchestratorToolContext
         int $commandTimeout,
         int $commandTimeoutMax,
         CommandApprovalTrust $approvalTrust,
+        ?CommandPolicyEngine $policyEngine = null,
     ): void {
-        self::$execBridge = $execBridge;
-        self::$hosts = $hosts;
-        self::$aiSessionId = $aiSessionId;
-        self::$username = $username;
-        self::$commandTimeout = max(5, $commandTimeout);
-        self::$commandTimeoutMax = max(self::$commandTimeout, max(5, $commandTimeoutMax));
-        self::$threadKey = (string) $aiSessionId;
-        self::$approvalTrust = $approvalTrust;
+        $threadKey = (string) $aiSessionId;
+        if ($threadKey === '' || $threadKey === '0') {
+            throw new RuntimeException('OrchestratorToolContext aiSessionId is invalid.');
+        }
+
+        PolicyDecisionStore::releaseThread($threadKey);
+
+        self::$states[$threadKey] = new OrchestratorToolContextState(
+            execBridge: $execBridge,
+            hosts: $hosts,
+            policyEngine: $policyEngine,
+            aiSessionId: $aiSessionId,
+            username: $username,
+            commandTimeout: max(5, $commandTimeout),
+            commandTimeoutMax: max(max(5, $commandTimeout), max(5, $commandTimeoutMax)),
+            threadKey: $threadKey,
+            approvalTrust: $approvalTrust,
+        );
+        self::$activeThreadKey = $threadKey;
+    }
+
+    public static function use(string $threadKey): void
+    {
+        if ($threadKey === '' || !isset(self::$states[$threadKey])) {
+            throw new RuntimeException(sprintf('OrchestratorToolContext is not configured for thread "%s".', $threadKey));
+        }
+
+        self::$activeThreadKey = $threadKey;
+    }
+
+    public static function useSession(int $aiSessionId): void
+    {
+        self::use((string) $aiSessionId);
+    }
+
+    public static function release(string $threadKey): void
+    {
+        unset(self::$states[$threadKey]);
+        PolicyDecisionStore::releaseThread($threadKey);
+        if (self::$activeThreadKey === $threadKey) {
+            self::$activeThreadKey = null;
+        }
+    }
+
+    public static function releaseSession(int $aiSessionId): void
+    {
+        self::release((string) $aiSessionId);
     }
 
     public static function execBridge(): SshExecBridge
     {
-        if (self::$execBridge === null) {
-            throw new RuntimeException('OrchestratorToolContext is not configured.');
-        }
-
-        return self::$execBridge;
+        return self::state()->execBridge;
     }
 
     public static function hosts(): HostRepository
     {
-        if (self::$hosts === null) {
-            throw new RuntimeException('OrchestratorToolContext is not configured.');
-        }
+        return self::state()->hosts;
+    }
 
-        return self::$hosts;
+    public static function policyEngine(): ?CommandPolicyEngine
+    {
+        return self::state()->policyEngine;
     }
 
     public static function aiSessionId(): int
     {
-        return self::$aiSessionId;
+        return self::state()->aiSessionId;
     }
 
     public static function username(): string
     {
-        return self::$username;
+        return self::state()->username;
     }
 
     public static function commandTimeout(): int
     {
-        return self::$commandTimeout;
+        return self::state()->commandTimeout;
     }
 
     public static function commandTimeoutMax(): int
     {
-        return self::$commandTimeoutMax;
+        return self::state()->commandTimeoutMax;
     }
 
     public static function threadKey(): string
     {
-        return self::$threadKey;
+        return self::state()->threadKey;
     }
 
-    public static function commandApprovalRequired(): bool
+    public static function sessionTrustEnabled(?string $threadKey = null): bool
     {
-        if (self::$threadKey === '' || self::$approvalTrust === null) {
-            return true;
+        $state = self::state($threadKey);
+
+        return $state->approvalTrust->isEnabled($state->threadKey);
+    }
+
+    private static function state(?string $threadKey = null): OrchestratorToolContextState
+    {
+        $key = $threadKey ?? self::$activeThreadKey;
+        if ($key === null || !isset(self::$states[$key])) {
+            throw new RuntimeException('OrchestratorToolContext is not configured.');
         }
 
-        return !self::$approvalTrust->isEnabled(self::$threadKey);
+        return self::$states[$key];
     }
 }

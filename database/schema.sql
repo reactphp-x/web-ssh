@@ -154,3 +154,40 @@ CREATE TABLE IF NOT EXISTS ai_profiles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_profiles_selected ON ai_profiles (is_selected);
+
+CREATE TABLE IF NOT EXISTS command_policies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    scope_type TEXT NOT NULL DEFAULT 'global',
+    scope_id INTEGER NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    rules_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_policies_scope ON command_policies (scope_type, scope_id);
+CREATE INDEX IF NOT EXISTS idx_command_policies_enabled ON command_policies (enabled);
+
+CREATE TABLE IF NOT EXISTS command_executions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL,
+    host_id INTEGER NULL,
+    command TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    matched_rule TEXT NULL,
+    inspection_json TEXT NOT NULL DEFAULT '{}',
+    session_id INTEGER NULL,
+    ai_session_id INTEGER NULL,
+    exit_code INTEGER NULL,
+    timed_out INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (host_id) REFERENCES hosts (id) ON DELETE SET NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL,
+    FOREIGN KEY (ai_session_id) REFERENCES ai_sessions (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_executions_username ON command_executions (username);
+CREATE INDEX IF NOT EXISTS idx_command_executions_host_id ON command_executions (host_id);
+CREATE INDEX IF NOT EXISTS idx_command_executions_created_at ON command_executions (created_at);

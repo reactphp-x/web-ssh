@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace App\Chat;
 
+use App\Neuron\Agent\Middleware\RunSshCommandPolicyHelper;
 use App\Neuron\HttpClient\HttpStreamScope;
 use App\Neuron\HttpClient\ReactHttpClient;
 use App\Neuron\SshAgent;
 use App\Neuron\Tools\RunSshCommandTool;
 use App\Neuron\Workflow\FeedbackField;
 use App\Neuron\Workflow\FeedbackRequest;
+use App\Policy\CommandPolicyEngine;
 use App\Ssh\SshSessionBridge;
 use App\Ssh\SshToolContext;
 use NeuronAI\Chat\Enums\MessageRole;
@@ -34,6 +36,7 @@ final class ChatService
         private readonly ChatStreamSession $streamSession,
         private readonly CommandApprovalTrust $approvalTrust,
         private readonly LoggerInterface $logger,
+        private readonly ?CommandPolicyEngine $policyEngine = null,
     ) {
     }
 
@@ -253,7 +256,7 @@ final class ChatService
             return null;
         }
 
-        return $this->serializeApprovalRequest($request, $this->workflowResumeToken($connId));
+        return $this->serializeApprovalRequest($request, $this->workflowResumeToken($connId), $connId);
     }
 
     /**
@@ -322,7 +325,7 @@ final class ChatService
         $this->ensureDirectories();
         $this->fileHistory($connId)->repairIncompleteToolCalls($resume === null);
 
-        $agent = $this->makeAgent($connId, $scope);
+        $agent = $this->makeAgent($connId, $username, $scope);
         $assembled = '';
         $lockKey = $this->lockKey($username, $connId);
 
@@ -418,7 +421,7 @@ final class ChatService
             throw new ChatException($interrupt->getMessage());
         }
 
-        $approval = $this->serializeApprovalRequest($request, $interrupt->getWorkflowId());
+        $approval = $this->serializeApprovalRequest($request, $interrupt->getWorkflowId(), $connId);
         $content = $this->interruptContent(trim($partialContent), $this->approvalHint($approval));
         if ($emit) {
             ChatTokenUsage::emit($this->fileHistory($connId), $this->settings, $emit);
@@ -455,7 +458,7 @@ final class ChatService
     /**
      * @return array<string, mixed>
      */
-    private function serializeApprovalRequest(ApprovalRequest $request, string $resumeToken): array
+    private function serializeApprovalRequest(ApprovalRequest $request, string $resumeToken, string $threadKey): array
     {
         $actions = [];
         foreach ($request->getActions() as $action) {
@@ -464,13 +467,17 @@ final class ChatService
             }
             $label = $this->toolLabel($action->name);
             $description = $this->prettyJson((string) $action->description);
-            $actions[] = [
-                'id' => $action->id,
-                'name' => $action->name,
-                'label' => $label,
-                'description' => $description,
-                'detail' => $this->actionDetail($label, $description),
-            ];
+            $actions[] = RunSshCommandPolicyHelper::enrichApprovalAction(
+                $threadKey,
+                RunSshCommandPolicyHelper::extractCommandFromDescription((string) $action->description),
+                [
+                    'id' => $action->id,
+                    'name' => $action->name,
+                    'label' => $label,
+                    'description' => $description,
+                    'detail' => $this->actionDetail($label, $description),
+                ],
+            );
         }
 
         return [
@@ -637,7 +644,7 @@ final class ChatService
         ];
     }
 
-    private function makeAgent(string $connId, ?HttpStreamScope $scope): SshAgent
+    private function makeAgent(string $connId, string $username, ?HttpStreamScope $scope): SshAgent
     {
         SshToolContext::configure(
             $this->bridge,
@@ -645,6 +652,8 @@ final class ChatService
             $this->settings->commandTimeoutMax(),
             $connId,
             $this->approvalTrust,
+            $username,
+            $this->policyEngine,
         );
 
         $http = $this->httpClient;

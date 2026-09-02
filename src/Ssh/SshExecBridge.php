@@ -43,6 +43,8 @@ final class SshExecBridge
         private readonly ?SshLiveRegistry $liveRegistry = null,
         private readonly ?SessionRecorder $recorder = null,
         private readonly ?AiSessionLiveTranscript $liveTranscript = null,
+        private readonly ?\App\Policy\CommandPolicyEngine $policyEngine = null,
+        private readonly ?\App\Repository\CommandExecutionRepository $commandExecutions = null,
     ) {
     }
 
@@ -282,7 +284,25 @@ final class SshExecBridge
             return reject(new RuntimeException('命令不能为空。'));
         }
 
-        if ($this->isBlockedCommand($command)) {
+        $policyDecision = null;
+        $hostGroupId = null;
+        if ($this->policyEngine !== null) {
+            $host = await($this->hosts->findById($hostId));
+            $hostGroupId = is_array($host) && isset($host['group_id']) && is_numeric($host['group_id'])
+                ? (int) $host['group_id']
+                : null;
+            $policyDecision = $this->policyEngine->evaluate($command, new \App\Policy\PolicyContext(
+                username: $username,
+                hostId: $hostId,
+                hostGroupId: $hostGroupId,
+                source: 'orchestrator',
+                aiSessionId: $aiSessionId,
+                threadKey: (string) $aiSessionId,
+            ));
+            if ($policyDecision->action === \App\Policy\PolicyAction::Deny) {
+                return reject(new RuntimeException($policyDecision->reason));
+            }
+        } elseif ($this->isBlockedCommand($command)) {
             return reject(new RuntimeException('该命令被禁止通过 AI 执行（交互式/TUI 命令）。'));
         }
 
@@ -299,7 +319,7 @@ final class SshExecBridge
             function (string $chunk) use ($aiSessionId, $segmentId, $liveKey, $sessionId): void {
                 $this->publishAiChunk($aiSessionId, $segmentId, $liveKey, $sessionId, $chunk);
             },
-        )->then(function (CommandResult $result) use ($aiSessionId, $segmentId, $liveKey, $sessionId): CommandResult {
+        )->then(function (CommandResult $result) use ($aiSessionId, $segmentId, $liveKey, $sessionId, $username, $hostId, $command, $policyDecision): CommandResult {
             $this->publishAiChunk(
                 $aiSessionId,
                 $segmentId,
@@ -308,9 +328,45 @@ final class SshExecBridge
                 self::formatLiveFooter($result->exitCode, $result->timedOut),
             );
             $this->recorder?->syncManifest($sessionId);
+            $this->recordExecution($username, $hostId, $command, $aiSessionId, $sessionId, $result, $policyDecision);
 
             return $result;
         });
+    }
+
+    private function recordExecution(
+        string $username,
+        int $hostId,
+        string $command,
+        int $aiSessionId,
+        int $sessionId,
+        CommandResult $result,
+        ?\App\Policy\PolicyDecision $policyDecision,
+    ): void {
+        if ($this->commandExecutions === null || $this->policyEngine === null) {
+            return;
+        }
+
+        $decision = $policyDecision ?? $this->policyEngine->evaluate($command, new \App\Policy\PolicyContext(
+            username: $username,
+            hostId: $hostId,
+            hostGroupId: null,
+            source: 'orchestrator',
+            aiSessionId: $aiSessionId,
+        ));
+
+        $this->commandExecutions->write(
+            $username,
+            $hostId,
+            $command,
+            $decision->action->value,
+            $decision->matchedRule,
+            $decision->inspection->toAuditSummary(),
+            $sessionId,
+            $aiSessionId,
+            $result->exitCode,
+            $result->timedOut,
+        );
     }
 
     public function closeSession(int $aiSessionId): void
