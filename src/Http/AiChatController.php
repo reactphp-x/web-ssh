@@ -297,7 +297,7 @@ final class AiChatController
         $this->streamSession->begin($lockKey, $connId, $userMessage);
         $this->streamSession->registerScope($lockKey, $scope);
 
-        Loop::futureTick(async(function () use ($through, $scope, $lockKey, $run): void {
+        Loop::futureTick(async(function () use ($through, $scope, $lockKey, $connId, $run): void {
             $emit = function (string $event, array $data) use ($through, $lockKey): void {
                 $this->streamSession->append($lockKey, $event, $data);
                 if (!$through->isWritable()) {
